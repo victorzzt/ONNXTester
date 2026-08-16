@@ -1,0 +1,9 @@
+.local-env/
+.codex/
+data/audio/*
+data/models/*
+data/tmp/*
+!data/audio/.gitkeep
+!data/models/.gitkeep
+!data/tmp/.gitkeep
+DEVELOPMENT_HANDOFF.local.md

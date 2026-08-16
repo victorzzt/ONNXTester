@@ -1,0 +1,202 @@
+<!doctype html>
+<!-- Static application shell; behavior is attached by app.js after parsing. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f5f7fb">
+    <title>ONNXTTS — Local voice studio</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <!-- Run before CSS to avoid a light-theme flash when dark mode was saved. -->
+    <script src="/theme.js"></script>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <!-- Global identity, help, theme selection, and local-only status. -->
+      <header class="topbar">
+        <div class="topbar-brand">
+          <a class="brand" href="/" aria-label="ONNXTTS home">
+            <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <span>ONNX<span>TTS</span></span>
+          </a>
+          <button id="openInfo" class="help-button" type="button" aria-label="About ONNXTTS" aria-haspopup="dialog">?</button>
+        </div>
+        <div class="topbar-actions">
+          <button id="themeToggle" class="theme-toggle" type="button" aria-label="Switch to dark theme" aria-pressed="false">
+            <span class="theme-toggle-label">Light</span>
+            <span class="theme-toggle-track" aria-hidden="true"><span class="theme-toggle-thumb"></span></span>
+          </button>
+          <div class="local-badge"><span></span> Running locally</div>
+        </div>
+      </header>
+
+      <main>
+        <!-- Two-column workspace: selectable voices on the left, editor on the right. -->
+        <section class="studio-grid">
+          <!-- Voice groups and the add/download/upload menu. -->
+          <aside class="voice-panel card">
+            <div class="panel-heading">
+              <div>
+                <p class="label">VOICE LIBRARY</p>
+                <h2>Choose a voice</h2>
+              </div>
+              <div id="addVoiceMenuWrap" class="add-menu-wrap">
+                <button id="toggleAddMenu" class="icon-button" type="button" aria-label="Add voice" aria-haspopup="menu" aria-expanded="false">+</button>
+                <div id="addVoiceMenu" class="add-voice-menu" role="menu" hidden>
+                  <button id="openDownload" type="button" role="menuitem"><span aria-hidden="true">↗</span>Add from Hugging Face</button>
+                  <button id="openUpload" type="button" role="menuitem"><span aria-hidden="true">↑</span>Upload Custom</button>
+                </div>
+              </div>
+            </div>
+            <div id="voiceList" class="voice-list" aria-live="polite">
+              <div class="voice-skeleton"></div>
+              <div class="voice-skeleton"></div>
+            </div>
+          </aside>
+
+          <!-- Transcript input, synthesis controls, status, and generated preview. -->
+          <section class="editor-panel card">
+            <div class="editor-heading">
+              <div>
+                <p class="label">TRANSCRIPT</p>
+                <h2>What should we say?</h2>
+              </div>
+              <span id="charCount" class="char-count">0 / 50,000</span>
+            </div>
+            <textarea id="transcript" maxlength="50000" spellcheck="true" placeholder="Paste a transcript here…">Welcome to ONNX TTS. This voice is generated locally, using a Piper model stored on this computer.</textarea>
+
+            <div class="control-row">
+              <fieldset class="format-control">
+                <legend>OUTPUT</legend>
+                <label><input type="radio" name="format" value="wav" checked><span>WAV</span></label>
+                <label><input type="radio" name="format" value="mp3"><span>MP3</span></label>
+              </fieldset>
+              <label class="range-control">
+                <span><b>PACE</b><output id="paceValue">Natural · 1.00×</output></span>
+                <input id="pace" type="range" min="0.65" max="1.4" value="1" step="0.05">
+              </label>
+              <label class="range-control">
+                <span><b>SENTENCE PAUSE</b><output id="pauseValue">180 ms</output></span>
+                <input id="sentencePause" type="range" min="0" max="800" value="180" step="20">
+              </label>
+            </div>
+
+            <div id="speakerField" class="speaker-field" hidden>
+              <label for="speaker">SPEAKER</label>
+              <select id="speaker"></select>
+            </div>
+
+            <div class="action-row">
+              <p id="editorStatus" class="status-message" role="status">Select a voice, then generate a preview.</p>
+              <button id="generate" class="primary-button" type="button"><span class="button-icon">▶</span><span class="button-label">Generate preview</span></button>
+            </div>
+
+            <!-- Reserved height prevents the editor card from jumping after generation. -->
+            <div class="result-slot">
+              <section id="result" class="result" hidden>
+                <div class="result-copy">
+                  <div class="result-icon">≈</div>
+                  <div><b id="resultTitle">Preview ready</b><span id="resultMeta"></span></div>
+                </div>
+                <audio id="audio" controls preload="metadata"></audio>
+                <a id="download" class="download-button" href="#">Download <span>↓</span></a>
+              </section>
+            </div>
+          </section>
+        </section>
+
+        <!-- Privacy promise and supported voice format. -->
+        <footer>
+          <p><span class="privacy-dot"></span><b>Private by design.</b> Text and audio stay on this machine.</p>
+          <p>Piper-compatible ONNX voices · No npm packages required</p>
+        </footer>
+      </main>
+    </div>
+
+    <!-- Hugging Face voice inspection and download flow. -->
+    <dialog id="downloadDialog">
+      <form method="dialog" class="dialog-shell">
+        <div class="dialog-heading">
+          <div><p class="label">VOICE INSTALLER</p><h2>Add a Piper voice</h2></div>
+          <button class="dialog-close" value="cancel" aria-label="Close">×</button>
+        </div>
+        <p class="dialog-copy">Paste a Hugging Face voice-folder URL or a direct <code>.onnx</code> URL. The matching configuration is downloaded automatically.</p>
+        <label class="input-label" for="hfUrl">HUGGING FACE URL</label>
+        <input id="hfUrl" type="url" autocomplete="off" placeholder="https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_GB/…">
+        <details>
+          <summary>Private or gated model</summary>
+          <label class="input-label" for="hfToken">HF READ TOKEN <span>optional, never stored</span></label>
+          <input id="hfToken" type="password" autocomplete="off" placeholder="hf_…">
+        </details>
+        <div id="downloadStatus" class="download-status" role="status"></div>
+        <div class="dialog-actions">
+          <a href="https://huggingface.co/rhasspy/piper-voices/tree/main" target="_blank" rel="noreferrer">Browse Piper voices ↗</a>
+          <button id="installVoice" class="primary-button" type="button"><span class="button-label">Inspect &amp; download</span></button>
+        </div>
+        <p class="license-note">Review the repository’s model card and licence before use.</p>
+      </form>
+    </dialog>
+
+    <!-- Local custom ONNX + JSON upload flow. -->
+    <dialog id="uploadDialog">
+      <form id="uploadForm" class="dialog-shell">
+        <div class="dialog-heading">
+          <div><p class="label">CUSTOM VOICE</p><h2>Upload a Piper voice</h2></div>
+          <button id="closeUpload" class="dialog-close" type="button" aria-label="Close">×</button>
+        </div>
+        <p class="dialog-copy">Choose one Piper <code>.onnx</code> model and its matching JSON configuration. Both files stay on this machine.</p>
+
+        <label class="input-label" for="customModel">ONNX MODEL</label>
+        <input id="customModel" class="file-input" name="model" type="file" accept=".onnx,application/octet-stream" required>
+
+        <label class="input-label" for="customConfig">PIPER JSON CONFIGURATION</label>
+        <input id="customConfig" class="file-input" name="config" type="file" accept=".json,application/json" required>
+
+        <div id="uploadStatus" class="download-status" role="status"></div>
+        <div class="dialog-actions upload-actions">
+          <span>Maximum ONNX size: 1 GB</span>
+          <button id="uploadVoice" class="primary-button" type="submit"><span class="button-label">Upload voice</span></button>
+        </div>
+        <p class="license-note">Custom uploads appear in the <code>custom</code> folder.</p>
+      </form>
+    </dialog>
+
+    <!-- About, open-source stack, licences, and acknowledgements. -->
+    <dialog id="infoDialog" class="info-dialog" aria-labelledby="infoTitle" aria-describedby="infoDescription" tabindex="-1">
+      <article class="info-shell">
+        <p class="eyebrow">LOCAL VOICE STUDIO</p>
+        <h1 id="infoTitle">Turn a transcript into<br><em>natural speech.</em></h1>
+        <p id="infoDescription" class="lede">Download a Piper-compatible ONNX voice from Hugging Face, render on this machine, and keep every word private.</p>
+
+        <section class="info-section" aria-labelledby="stackTitle">
+          <h2 id="stackTitle" class="info-section-title">PLATFORM &amp; OPEN-SOURCE STACK</h2>
+          <div class="info-table-wrap">
+            <table class="info-table">
+              <thead><tr><th scope="col">Platform / library</th><th scope="col">Used for</th><th scope="col">Version / licence</th></tr></thead>
+              <tbody>
+                <tr><td>Windows &amp; Web APIs</td><td>Local host and browser interface</td><td>Windows x64 · Web standards</td></tr>
+                <tr><td>Node.js</td><td>Local HTTP server</td><td>20+ · MIT</td></tr>
+                <tr><td>CPython</td><td>Isolated synthesis runtime</td><td>3.10.20 · PSF</td></tr>
+                <tr><td>Piper TTS</td><td>Text-to-speech synthesis</td><td>1.5.0 · GPL-3.0+</td></tr>
+                <tr><td>ONNX Runtime</td><td>ONNX model inference</td><td>1.23.2 · MIT</td></tr>
+                <tr><td>NumPy</td><td>Tensor and audio processing</td><td>2.2.6 · BSD-3-Clause</td></tr>
+                <tr><td>FFmpeg</td><td>Local MP3 encoding</td><td>8.1.2 · GPLv3 build</td></tr>
+                <tr><td>Hugging Face Hub</td><td>Voice discovery and downloads</td><td>Model-specific terms</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="info-thanks" aria-labelledby="thanksTitle">
+          <h2 id="thanksTitle" class="info-section-title">ACKNOWLEDGEMENTS</h2>
+          <p>With thanks to the maintainers and contributors behind these projects, the Hugging Face community, and every compatible voice-model creator. Each voice remains subject to its own model card and licence. This web app was developed with the assistance of ChatGPT Codex.</p>
+        </section>
+        <p class="info-dismiss">Click anywhere to close</p>
+      </article>
+    </dialog>
+
+    <!-- Main UI controller; loaded after every referenced element exists. -->
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
