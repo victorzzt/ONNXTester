@@ -1,3 +1,14 @@
+<#
+.SYNOPSIS
+    Manages the self-contained Windows runtime stored in .local-env.
+.DESCRIPTION
+    Installs pinned CPython, Piper/ONNX Runtime wheels, and FFmpeg without
+    reading or modifying system Python or Conda. Downloads are SHA-256 checked,
+    extraction stays under the project, and -clear removes only .local-env.
+.PARAMETER Action
+    install creates or repairs missing components; status is read-only; clear
+    removes the project-local runtime after validating its absolute path.
+#>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
@@ -8,6 +19,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
+# All install and cache paths are derived from this script, not the caller's CWD.
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $RuntimeRoot = Join-Path $ProjectRoot ".local-env"
 $PythonRoot = Join-Path $RuntimeRoot "python"
@@ -20,6 +32,7 @@ $WheelManifestFile = Join-Path $PSScriptRoot "local-runtime-wheels.json"
 $DownloadRoot = Join-Path $RuntimeRoot "downloads"
 $WheelRoot = Join-Path $DownloadRoot "wheels"
 $ExtractRoot = Join-Path $RuntimeRoot "python-extract"
+# Reproducible upstream artifacts: fixed versions, URLs, filenames, and hashes.
 $ArchiveName = "cpython-3.10.20+20260718-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
 $ArchivePath = Join-Path $DownloadRoot $ArchiveName
 $ArchiveUrl = "https://github.com/astral-sh/python-build-standalone/releases/download/20260718/cpython-3.10.20%2B20260718-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
@@ -35,6 +48,9 @@ $FfmpegArchiveUrl = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-es
 $FfmpegArchiveSha256 = "db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec"
 $FfmpegExtractRoot = Join-Path $RuntimeRoot "ffmpeg-extract"
 
+# ---------------------------------------------------------------------------
+# Component readiness checks
+# ---------------------------------------------------------------------------
 function Test-LocalPythonEnvironment {
     return (Test-Path -LiteralPath $PythonExe -PathType Leaf) -and
         (Test-Path -LiteralPath $PiperModule -PathType Leaf) -and
@@ -51,6 +67,9 @@ function Test-LocalEnvironment {
     return (Test-LocalPythonEnvironment) -and (Test-LocalFfmpeg)
 }
 
+# ---------------------------------------------------------------------------
+# Download integrity and destructive-operation safety
+# ---------------------------------------------------------------------------
 function Get-Sha256 {
     param([Parameter(Mandatory = $true)][string] $Path)
 
@@ -66,6 +85,7 @@ function Get-Sha256 {
     }
 }
 
+# Guard every recursive removal against an unexpected or escaped path.
 function Assert-SafeRuntimePath {
     $resolvedProject = [System.IO.Path]::GetFullPath($ProjectRoot).TrimEnd("\")
     $resolvedRuntime = [System.IO.Path]::GetFullPath($RuntimeRoot).TrimEnd("\")
@@ -77,6 +97,7 @@ function Assert-SafeRuntimePath {
     }
 }
 
+# -clear is intentionally limited to the verified .local-env directory.
 function Remove-LocalEnvironment {
     Assert-SafeRuntimePath
     if (Test-Path -LiteralPath $RuntimeRoot) {
@@ -88,6 +109,8 @@ function Remove-LocalEnvironment {
     }
 }
 
+# Run the bundled interpreter without user site-packages or Conda variables.
+# Original process values are restored even when Python fails.
 function Invoke-IsolatedPython {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]] $PythonArguments)
 
@@ -112,6 +135,9 @@ function Invoke-IsolatedPython {
     }
 }
 
+# ---------------------------------------------------------------------------
+# CPython and pinned Piper/ONNX package installation
+# ---------------------------------------------------------------------------
 function Install-LocalPythonEnvironment {
     if (Test-LocalPythonEnvironment) {
         Write-Host "Local Python/Piper runtime is already installed."
@@ -122,6 +148,7 @@ function Install-LocalPythonEnvironment {
 
     Assert-SafeRuntimePath
     New-Item -ItemType Directory -Path $DownloadRoot -Force | Out-Null
+    # Reuse only a cached archive whose hash still matches the pinned value.
     if ((Test-Path -LiteralPath $ArchivePath -PathType Leaf) -and (Get-Sha256 -Path $ArchivePath) -ne $ArchiveSha256) {
         Write-Host "Discarding a cached Python archive that failed SHA-256 verification."
         Remove-Item -LiteralPath $ArchivePath -Force
@@ -157,6 +184,7 @@ function Install-LocalPythonEnvironment {
         Write-Host "Using cached Python archive: $ArchivePath"
     }
 
+    # Replace incomplete component directories only after the archive is valid.
     Remove-Item -LiteralPath $PythonRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $PackagesRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $ExtractRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -177,6 +205,7 @@ function Install-LocalPythonEnvironment {
     Move-Item -LiteralPath $pythonCandidate.Directory.FullName -Destination $PythonRoot
     Remove-Item -LiteralPath $ExtractRoot -Recurse -Force
 
+    # The wheel manifest contains the only permitted package URLs and hashes.
     Write-Host "Downloading pinned Piper/ONNX Runtime wheels..."
     New-Item -ItemType Directory -Path $WheelRoot -Force | Out-Null
     $wheelManifest = Get-Content -LiteralPath $WheelManifestFile -Raw | ConvertFrom-Json
@@ -214,6 +243,7 @@ function Install-LocalPythonEnvironment {
         }
     }
 
+    # pip works offline here: every wheel was downloaded and verified above.
     Write-Host "Installing Piper and ONNX Runtime into the project..."
     New-Item -ItemType Directory -Path $PackagesRoot -Force | Out-Null
     Invoke-IsolatedPython -PythonArguments @(
@@ -226,6 +256,7 @@ function Install-LocalPythonEnvironment {
         "--requirement", $RequirementsFile
     )
 
+    # Import the three core packages before declaring the runtime ready.
     $escapedPackages = $PackagesRoot.Replace("\", "\\").Replace("'", "\'")
     $validationCode = "import sys; sys.path.insert(0, '$escapedPackages'); import piper, numpy, onnxruntime; print('Piper runtime import check passed')"
     Invoke-IsolatedPython -PythonArguments @("-I", "-S", "-c", $validationCode)
@@ -245,6 +276,9 @@ function Install-LocalPythonEnvironment {
     Write-Host "Packages: $PackagesRoot"
 }
 
+# ---------------------------------------------------------------------------
+# FFmpeg essentials installation and MP3 encoder validation
+# ---------------------------------------------------------------------------
 function Install-LocalFfmpeg {
     if (Test-LocalFfmpeg) {
         Write-Host "Local FFmpeg runtime is already installed."
@@ -254,6 +288,7 @@ function Install-LocalFfmpeg {
 
     Assert-SafeRuntimePath
     New-Item -ItemType Directory -Path $DownloadRoot -Force | Out-Null
+    # Apply the same cache/hash discipline used by the Python archive.
     if ((Test-Path -LiteralPath $FfmpegArchivePath -PathType Leaf) -and (Get-Sha256 -Path $FfmpegArchivePath) -ne $FfmpegArchiveSha256) {
         Write-Host "Discarding a cached FFmpeg archive that failed SHA-256 verification."
         Remove-Item -LiteralPath $FfmpegArchivePath -Force
@@ -289,6 +324,7 @@ function Install-LocalFfmpeg {
         Write-Host "Using cached FFmpeg archive: $FfmpegArchivePath"
     }
 
+    # Extract into a staging directory, then move the complete package in place.
     Remove-Item -LiteralPath $FfmpegRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $FfmpegExtractRoot -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $FfmpegExtractRoot -Force | Out-Null
@@ -309,6 +345,7 @@ function Install-LocalFfmpeg {
     Move-Item -LiteralPath $packageRoot -Destination $FfmpegRoot
     Remove-Item -LiteralPath $FfmpegExtractRoot -Recurse -Force
 
+    # Confirm both executable startup and the libmp3lame feature used by Server.
     $versionOutput = & $FfmpegExe -hide_banner -version 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "The local FFmpeg executable failed its version check."
@@ -324,6 +361,9 @@ function Install-LocalFfmpeg {
     Write-Host "FFmpeg: $FfmpegExe"
 }
 
+# ---------------------------------------------------------------------------
+# Top-level component orchestration and shared install marker
+# ---------------------------------------------------------------------------
 function Install-LocalEnvironment {
     if (Test-LocalEnvironment) {
         Write-Host "Project-local runtime is already installed."
@@ -365,6 +405,7 @@ function Install-LocalEnvironment {
     Write-Host "FFmpeg: $FfmpegExe"
 }
 
+# Dispatch exactly one normalized action supplied by set_local_env.cmd.
 switch ($Action) {
     "install" { Install-LocalEnvironment }
     "clear" { Remove-LocalEnvironment }
