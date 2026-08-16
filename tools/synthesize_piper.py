@@ -1,8 +1,7 @@
-"""Render text with a Piper-compatible ONNX voice.
+"""Render sentence-segmented text with a Piper-compatible ONNX voice.
 
-This bridge keeps the local web server dependency-free while loading Piper from
-the project-local runtime selected by the Node entry point. Node passes paths
-and synthesis controls as arguments, then reads the final JSON line from stdout.
+Node supplies the exact sentence list so this bridge can synthesize each segment
+separately and report frame-accurate sentence start/end times with the audio.
 """
 
 from __future__ import annotations
@@ -15,12 +14,13 @@ import wave
 
 
 def parse_args() -> argparse.Namespace:
-    """Describe the narrow command-line contract used by onnx-runtime.js."""
+    """Describe the narrow command-line contract used by the synthesis worker."""
 
     parser = argparse.ArgumentParser(description="Synthesize a Piper ONNX voice")
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--sentences", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--length-scale", type=float, default=1.0)
     parser.add_argument("--sentence-silence", type=float, default=0.18)
@@ -29,24 +29,34 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def read_sentences(path: Path) -> list[str]:
+    """Load and validate the Node-segmented sentence protocol."""
+
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, list):
+        raise ValueError("Sentence input must be a JSON array")
+    sentences = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    if not sentences or len(sentences) != len(value):
+        raise ValueError("Sentence input contains an empty or invalid segment")
+    return sentences
+
+
 def main() -> None:
-    """Load one local voice, stream its sentence chunks, and write mono PCM."""
+    """Load one voice, synthesize each sentence, and write mono PCM plus timings."""
 
     args = parse_args()
 
-    # Piper voices are valid only when ONNX and companion JSON share a basename.
     config_path = Path(f"{args.model}.json")
     if not args.model.is_file() or not config_path.is_file():
         raise FileNotFoundError("The selected voice requires matching .onnx and .onnx.json files")
 
-    # Node starts Python with -I -S; this explicit path is the only package root.
     sys.path.insert(0, str(args.runtime.resolve()))
     from piper import PiperVoice, SynthesisConfig  # pylint: disable=import-outside-toplevel
 
-    # Transcript text arrives through a temporary UTF-8 file, never a shell arg.
     text = args.input.read_text(encoding="utf-8").strip()
     if not text:
         raise ValueError("Transcript is empty")
+    sentences = read_sentences(args.sentences)
 
     voice = PiperVoice.load(args.model.resolve())
     synthesis_config = SynthesisConfig(
@@ -59,28 +69,41 @@ def main() -> None:
     )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-
-    # Piper emits signed 16-bit mono chunks. Insert raw zero-valued PCM frames
-    # between chunks so sentence spacing does not require a second audio tool.
-    silence_frames = round(voice.config.sample_rate * args.sentence_silence)
+    sample_rate = voice.config.sample_rate
+    silence_frames = round(sample_rate * args.sentence_silence)
     silence = bytes(silence_frames * 2)
     chunk_count = 0
     frame_count = 0
+    sentence_timings: list[dict[str, object]] = []
 
     try:
         with wave.open(str(args.output), "wb") as output:
-            output.setframerate(voice.config.sample_rate)
+            output.setframerate(sample_rate)
             output.setsampwidth(2)
             output.setnchannels(1)
-            for chunk in voice.synthesize(text, synthesis_config):
-                if chunk_count:
+            for sentence_index, sentence in enumerate(sentences):
+                if sentence_index:
                     output.writeframes(silence)
                     frame_count += silence_frames
-                output.writeframes(chunk.audio_int16_bytes)
-                frame_count += len(chunk.audio_int16_bytes) // 2
-                chunk_count += 1
+
+                start_frame = frame_count
+                sentence_chunks = 0
+                for chunk in voice.synthesize(sentence, synthesis_config):
+                    output.writeframes(chunk.audio_int16_bytes)
+                    frame_count += len(chunk.audio_int16_bytes) // 2
+                    chunk_count += 1
+                    sentence_chunks += 1
+
+                if sentence_chunks == 0:
+                    raise RuntimeError(f"Piper produced no audio for sentence {sentence_index + 1}")
+                sentence_timings.append(
+                    {
+                        "text": sentence,
+                        "start": round(start_frame / sample_rate, 3),
+                        "end": round(frame_count / sample_rate, 3),
+                    }
+                )
     except Exception:
-        # Never leave a partial WAV that could be served as a successful result.
         args.output.unlink(missing_ok=True)
         raise
 
@@ -88,16 +111,17 @@ def main() -> None:
         args.output.unlink(missing_ok=True)
         raise RuntimeError("Piper produced no audio")
 
-    # Keep this as the final stdout line: Node parses it as optional metadata.
     print(
         json.dumps(
             {
-                "sampleRate": voice.config.sample_rate,
+                "sampleRate": sample_rate,
                 "channels": 1,
                 "bitsPerSample": 16,
-                "duration": round(frame_count / voice.config.sample_rate, 3),
+                "duration": round(frame_count / sample_rate, 3),
                 "chunks": chunk_count,
-            }
+                "sentences": sentence_timings,
+            },
+            ensure_ascii=False,
         )
     )
 

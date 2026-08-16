@@ -95,12 +95,15 @@
             <!-- Reserved height prevents the editor card from jumping after generation. -->
             <div class="result-slot">
               <section id="result" class="result" hidden>
-                <div class="result-copy">
-                  <div class="result-icon">≈</div>
-                  <div><b id="resultTitle">Preview ready</b><span id="resultMeta"></span></div>
+                <div class="result-toolbar">
+                  <div class="result-copy">
+                    <div class="result-icon">≈</div>
+                    <div><b id="resultTitle">Preview ready</b><span id="resultMeta"></span></div>
+                  </div>
+                  <audio id="audio" controls preload="metadata"></audio>
+                  <a id="download" class="download-button" href="#">Download <span>↓</span></a>
                 </div>
-                <audio id="audio" controls preload="metadata"></audio>
-                <a id="download" class="download-button" href="#">Download <span>↓</span></a>
+                <div id="sentenceTimeline" class="sentence-timeline" aria-label="Sentence timeline" hidden></div>
               </section>
             </div>
           </section>

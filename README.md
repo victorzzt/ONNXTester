@@ -98,9 +98,9 @@ For Hugging Face, paste a folder URL containing one matching pair or paste a dir
 
 使用 Hugging Face 时，请粘贴只包含一组匹配文件的文件夹 URL，或直接粘贴 `.onnx`/`.onnx.json` URL。如果仓库根目录中存在多组候选语音，应用会拒绝该地址，以免模型选择不明确。私有或受限仓库可以为本次请求提供只读 token；token 不会写入磁盘。
 
-Select a voice, paste the transcript, adjust speed, sentence silence, volume, speaker, and output format, then choose Generate. The Preview card lets you listen to or download the result.
+Select a voice, paste the transcript, adjust speed, sentence silence, volume, speaker, and output format, then choose Generate. The Preview card shows sentence timestamps: the sentence currently being spoken receives a light highlight, and selecting any sentence seeks the player to its start. On portrait screens, the transcript and generated preview appear above Voice Library.
 
-选择语音后，粘贴文本，调整语速、句间静音、音量、说话人和输出格式，再点击 Generate。生成完成后可在 Preview 卡片中试听或下载。
+选择语音后，粘贴文本，调整语速、句间静音、音量、说话人和输出格式，再点击 Generate。Preview 卡片会显示句子时间戳：当前读到的句子会浅色高亮，点击任一句子可让播放器跳到该句开头。在竖屏中，文本和生成结果会排在 Voice Library 上方。
 
 Use the theme toggle in the upper-right corner for Light or Dark mode. Recently used voices appear in Recent and are stored only in browser LocalStorage.
 
@@ -126,6 +126,8 @@ Command-line `--port` or `-p` has priority over `ONNXTTS_PORT`. The default host
 | --- | --- | --- |
 | `ONNXTTS_PORT` | Local HTTP port / 本地 HTTP 端口 | `4317` |
 | `ONNXTTS_HOST` | Bind address / 监听地址 | `127.0.0.1` |
+| `ONNXTTS_SYNTHESIS_WORKERS` | Simultaneous synthesis workers / 同时合成 worker 数 | CPU-based, max 4 / 按 CPU 推断，最多 4 |
+| `ONNXTTS_SYNTHESIS_QUEUE_LIMIT` | Waiting-job limit / 等待任务上限 | worker-based, 4–16 / 按 worker 推断，4–16 |
 | `ONNXTTS_PYTHON` | Custom Python interpreter / 自定义 Python 解释器 | platform-local / 当前平台本地路径 |
 | `ONNXTTS_PIPER_RUNTIME` | Custom Piper package folder / 自定义 Piper 包目录 | `.local-env/packages` |
 | `ONNXTTS_FFMPEG` | Custom FFmpeg executable / 自定义 FFmpeg 可执行文件 | platform-local / 当前平台本地路径 |
@@ -155,9 +157,9 @@ Transcript text is sent only to the local ONNXTTS server. Network access is used
 
 输入文本只会发送到本机 ONNXTTS 服务。网络访问仅用于首次安装运行时，以及你明确要求检查或下载 Hugging Face 模型时。
 
-The server accepts custom ONNX files up to 1 GB, JSON configurations up to 5 MB, and transcripts up to 50,000 characters. Synthesis is serialized, so only one generation runs at a time.
+The server accepts custom ONNX files up to 1 GB, JSON configurations up to 5 MB, and transcripts up to 50,000 characters. Synthesis uses a bounded first-in, first-out queue with a CPU-sized worker limit. If every worker and waiting slot is occupied, the page reports `Too Many Request, please wait for a while.`; retry after an earlier job finishes.
 
-服务端接受最大 1 GB 的自定义 ONNX、最大 5 MB 的 JSON 配置以及最多 50,000 字符的文本。合成任务串行执行，因此同一时间只运行一个生成任务。
+服务端接受最大 1 GB 的自定义 ONNX、最大 5 MB 的 JSON 配置以及最多 50,000 字符的文本。合成使用容量有限的先进先出队列，并按 CPU 推断 worker 上限。如果所有 worker 和等待位置都已占用，页面会显示 `Too Many Request, please wait for a while.`；请等前面的任务完成后重试。
 
 Developer architecture, API, dependency pins, isolation rules, and maintenance notes are in [DevNotes.md](DevNotes.md).
 

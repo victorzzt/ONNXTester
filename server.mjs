@@ -461,6 +461,8 @@ server.listen(PORT, HOST, () => {
   console.log("Python: " + onnxRuntime.paths.python);
   console.log("Piper packages: " + onnxRuntime.paths.piperRuntime);
   console.log("FFmpeg: " + onnxRuntime.paths.ffmpeg);
+  const queue = onnxRuntime.status().queue;
+  console.log(`Synthesis queue: ${queue.workers} workers · ${queue.queueLimit} waiting jobs`);
 });
 
 // Close active connections promptly when CMD forwards Ctrl+C or the OS stops us.
@@ -473,6 +475,7 @@ function shutdown(signal) {
   }
   shutdownStarted = true;
   console.log(`\n${signal} received. Stopping ONNXTTS...`);
+  onnxRuntime.close();
   server.close(() => process.exit(0));
   server.closeAllConnections();
 }

@@ -1,7 +1,25 @@
 const $ = (selector) => document.querySelector(selector);
+
+// Storage keys and explicit debug flags stay centralized so browser-only test
+// behavior cannot be enabled accidentally by normal application state.
 const THEME_STORAGE_KEY = "onnxtts.theme";
 const RECENT_STORAGE_KEY = "onnxtts.recentVoices";
+const QUEUE_DEBUG_MODE = new URLSearchParams(window.location.search).get("queueDebug");
+const QUEUE_FULL_MESSAGE = "Too Many Request, please wait for a while.";
+const QUEUE_DEBUG_MODEL = Object.freeze({
+  id: "queue-debug-model",
+  key: "debug/queue",
+  name: "Queue Debug Voice",
+  language: "debug",
+  quality: "debug",
+  origin: "debug",
+  sampleRate: 22050,
+  sizeBytes: 0,
+  numSpeakers: 1,
+  speakers: {},
+});
 
+/** Returns a sanitized, bounded recent-voice list from browser storage. */
 function storedRecentIds() {
   try {
     const value = JSON.parse(localStorage.getItem(RECENT_STORAGE_KEY) || "[]");
@@ -11,12 +29,17 @@ function storedRecentIds() {
   }
 }
 
+// Client state stays deliberately small: generated audio remains on the server,
+// while only model selection and sentence timings are retained in the browser.
 const state = {
   models: [],
   selectedId: localStorage.getItem("onnxtts.voice") || null,
   recentIds: storedRecentIds(),
+  sentences: [],
+  activeSentence: -1,
 };
 
+// Cache stable DOM references once after index.html has finished parsing.
 const elements = {
   themeToggle: $("#themeToggle"),
   openInfo: $("#openInfo"),
@@ -31,6 +54,7 @@ const elements = {
   download: $("#download"),
   resultTitle: $("#resultTitle"),
   resultMeta: $("#resultMeta"),
+  sentenceTimeline: $("#sentenceTimeline"),
   pace: $("#pace"),
   paceValue: $("#paceValue"),
   pause: $("#sentencePause"),
@@ -56,6 +80,8 @@ const elements = {
   uploadVoice: $("#uploadVoice"),
 };
 
+// Theme state is mirrored across the document, control accessibility labels,
+// browser chrome color, LocalStorage, and other open tabs.
 function currentTheme() {
   return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
 }
@@ -92,6 +118,7 @@ window.addEventListener("storage", (event) => {
 
 syncThemeControl(currentTheme());
 
+// The About dialog closes from its backdrop or content as a deliberate shortcut.
 function dismissInfo() {
   if (elements.infoDialog.open) elements.infoDialog.close();
 }
@@ -103,6 +130,7 @@ function openInfoDialog() {
 elements.openInfo.addEventListener("click", openInfoDialog);
 elements.infoDialog.addEventListener("click", dismissInfo);
 
+// Presentation helpers below never mutate model data returned by the server.
 function bytes(value) {
   if (!value) return "";
   const units = ["B", "KB", "MB", "GB"];
@@ -135,6 +163,8 @@ function setUploadStatus(message, error = false) {
   elements.uploadStatus.classList.toggle("error", error);
 }
 
+// Voice rendering owns speaker choices, recent history, grouping, and the one
+// selected model id used by generation requests.
 function updateSpeakers() {
   const model = selectedModel();
   const entries = Object.entries(model?.speakers || {});
@@ -257,7 +287,20 @@ function renderModels() {
   setStatus(`${active.name} selected · ${active.origin}`);
 }
 
+/**
+ * Sends API requests and normalizes server failures into displayable errors.
+ * The explicit queueDebug query path simulates overload without calling Piper.
+ */
 async function request(url, options = {}) {
+  if (QUEUE_DEBUG_MODE === "full") {
+    if (url === "/api/models") return { models: [QUEUE_DEBUG_MODEL] };
+    if (url === "/api/generate") {
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+      const error = new Error(QUEUE_FULL_MESSAGE);
+      error.statusCode = 429;
+      throw error;
+    }
+  }
   const headers = { ...(options.headers || {}) };
   if (!(options.body instanceof FormData)) headers["Content-Type"] = "application/json";
   const response = await fetch(url, {
@@ -265,7 +308,11 @@ async function request(url, options = {}) {
     headers,
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || data.detail || `Request failed (${response.status})`);
+  if (!response.ok) {
+    const error = new Error(data.error || data.detail || `Request failed (${response.status})`);
+    error.statusCode = response.status;
+    throw error;
+  }
   return data;
 }
 
@@ -276,6 +323,107 @@ async function loadModels(preferredId) {
   renderModels();
 }
 
+// Sentence playback uses server-provided PCM timestamps. requestAnimationFrame
+// keeps the active cue smooth during playback; media events cover pause/seek and
+// browsers that throttle animation frames in background tabs.
+let playbackFrame = null;
+
+function resetSentenceTimeline() {
+  state.sentences = [];
+  state.activeSentence = -1;
+  elements.sentenceTimeline.replaceChildren();
+  elements.sentenceTimeline.hidden = true;
+}
+
+function formatCueTime(value) {
+  const seconds = Math.max(0, Number(value) || 0);
+  const minutes = Math.floor(seconds / 60);
+  const remainder = (seconds % 60).toFixed(1).padStart(4, "0");
+  return minutes + ":" + remainder;
+}
+
+function setActiveSentence(index, scroll = true) {
+  if (state.activeSentence === index) return;
+  state.activeSentence = index;
+  const cues = elements.sentenceTimeline.querySelectorAll(".sentence-cue");
+  cues.forEach((cue, cueIndex) => {
+    const active = cueIndex === index;
+    cue.classList.toggle("active", active);
+    if (active) cue.setAttribute("aria-current", "true");
+    else cue.removeAttribute("aria-current");
+  });
+  if (scroll && index >= 0) cues[index]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function sentenceAtTime(time) {
+  return state.sentences.findIndex((sentence) => time >= sentence.start && time < sentence.end);
+}
+
+function updateSentenceHighlight() {
+  setActiveSentence(sentenceAtTime(elements.audio.currentTime), !elements.audio.paused);
+}
+
+function trackPlayback() {
+  updateSentenceHighlight();
+  if (!elements.audio.paused && !elements.audio.ended) playbackFrame = requestAnimationFrame(trackPlayback);
+}
+
+function startPlaybackTracking() {
+  if (playbackFrame != null) cancelAnimationFrame(playbackFrame);
+  playbackFrame = requestAnimationFrame(trackPlayback);
+}
+
+function stopPlaybackTracking(clear = false) {
+  if (playbackFrame != null) cancelAnimationFrame(playbackFrame);
+  playbackFrame = null;
+  if (clear) setActiveSentence(-1, false);
+}
+
+/** Builds text-only cue buttons from validated numeric timing metadata. */
+function renderSentenceTimeline(sentences) {
+  resetSentenceTimeline();
+  const valid = Array.isArray(sentences) ? sentences
+    .map((sentence) => ({ text: String(sentence.text || "").trim(), start: Number(sentence.start), end: Number(sentence.end) }))
+    .filter((sentence) => sentence.text && Number.isFinite(sentence.start) && Number.isFinite(sentence.end) && sentence.end >= sentence.start)
+    : [];
+  state.sentences = valid;
+  if (!valid.length) return;
+
+  const fragment = document.createDocumentFragment();
+  valid.forEach((sentence, index) => {
+    const cue = document.createElement("button");
+    cue.type = "button";
+    cue.className = "sentence-cue";
+    cue.dataset.index = String(index);
+    cue.setAttribute("aria-label", "Seek to " + formatCueTime(sentence.start));
+    const time = document.createElement("span");
+    time.className = "sentence-cue-time";
+    time.textContent = formatCueTime(sentence.start);
+    const text = document.createElement("span");
+    text.className = "sentence-cue-text";
+    text.textContent = sentence.text;
+    cue.append(time, text);
+    fragment.append(cue);
+  });
+  elements.sentenceTimeline.append(fragment);
+  elements.sentenceTimeline.hidden = false;
+}
+
+/** Seeks to a cue immediately, or waits for media metadata when clicked early.
+ * HTTP byte-range support lets the browser perform the resulting random seek. */
+function seekToSentence(event) {
+  const cue = event.target.closest?.(".sentence-cue");
+  if (!cue || !elements.sentenceTimeline.contains(cue)) return;
+  const sentence = state.sentences[Number(cue.dataset.index)];
+  if (!sentence) return;
+  const seek = () => { elements.audio.currentTime = sentence.start; };
+  if (elements.audio.readyState === 0) elements.audio.addEventListener("loadedmetadata", seek, { once: true });
+  else seek();
+
+  setActiveSentence(Number(cue.dataset.index), false);
+}
+/** Runs one complete UI generation cycle and replaces any prior preview state.
+ * Queue overload errors flow through the same status area as validation errors. */
 async function generate() {
   const model = selectedModel();
   const text = elements.transcript.value.trim();
@@ -286,7 +434,10 @@ async function generate() {
   elements.generate.querySelector(".button-icon").textContent = "◌";
   elements.generate.querySelector(".button-label").textContent = "Rendering locally…";
   setStatus("Loading the voice and synthesising your transcript…");
+  stopPlaybackTracking(true);
+  elements.audio.pause();
   elements.result.hidden = true;
+  resetSentenceTimeline();
   try {
     const format = document.querySelector('input[name="format"]:checked').value;
     const data = await request("/api/generate", {
@@ -304,6 +455,7 @@ async function generate() {
     elements.download.href = data.downloadUrl;
     elements.resultTitle.textContent = `${model.name} preview`;
     elements.resultMeta.textContent = `${data.duration ? `${data.duration.toFixed(1)} sec · ` : ""}${format.toUpperCase()} · ${data.sampleRate ? `${(data.sampleRate / 1000).toFixed(1)} kHz` : "local render"}`;
+    renderSentenceTimeline(data.sentences);
     elements.result.hidden = false;
     recordRecentModel(model.id);
     setStatus("Preview ready. Play it here or download the file.");
@@ -318,6 +470,8 @@ async function generate() {
   }
 }
 
+/** Inspects and installs one unambiguous Hugging Face voice-model pair.
+ * Tokens exist only in the request and are cleared after a successful install. */
 async function installVoice() {
   const url = elements.hfUrl.value.trim();
   if (!url) return setDownloadStatus("Paste a Hugging Face URL first.", true);
@@ -343,6 +497,8 @@ async function installVoice() {
   }
 }
 
+// The compact add-voice menu preserves keyboard focus when Escape dismisses it
+// and delegates the actual workflows to their native dialogs.
 function closeAddMenu(restoreFocus = false) {
   if (elements.addMenu.hidden) return;
   elements.addMenu.hidden = true;
@@ -373,6 +529,8 @@ function openUploadDialog() {
   setTimeout(() => elements.customModel.focus(), 0);
 }
 
+/** Uploads one matching ONNX/config pair using multipart data, then refreshes
+ * the library so the server-validated model becomes the active selection. */
 async function uploadCustomVoice(event) {
   event.preventDefault();
   const modelFile = elements.customModel.files[0];
@@ -401,6 +559,8 @@ async function uploadCustomVoice(event) {
   }
 }
 
+// Register element-level controls after every handler has been declared; audio
+// events keep both native controls and sentence cues synchronized.
 elements.transcript.addEventListener("input", () => { elements.charCount.textContent = `${elements.transcript.value.length.toLocaleString()} / 50,000`; });
 elements.pace.addEventListener("input", () => {
   const value = Number(elements.pace.value);
@@ -409,6 +569,12 @@ elements.pace.addEventListener("input", () => {
 });
 elements.pause.addEventListener("input", () => { elements.pauseValue.textContent = `${elements.pause.value} ms`; });
 elements.generate.addEventListener("click", generate);
+elements.sentenceTimeline.addEventListener("click", seekToSentence);
+elements.audio.addEventListener("play", startPlaybackTracking);
+elements.audio.addEventListener("pause", () => stopPlaybackTracking());
+elements.audio.addEventListener("ended", () => stopPlaybackTracking(true));
+elements.audio.addEventListener("timeupdate", updateSentenceHighlight);
+elements.audio.addEventListener("seeked", updateSentenceHighlight);
 elements.installVoice.addEventListener("click", installVoice);
 elements.uploadForm.addEventListener("submit", uploadCustomVoice);
 elements.toggleAddMenu.addEventListener("click", toggleAddMenu);
@@ -416,6 +582,7 @@ elements.openDownload.addEventListener("click", openDownloadDialog);
 elements.openUpload.addEventListener("click", openUploadDialog);
 elements.closeUpload.addEventListener("click", () => elements.uploadDialog.close());
 
+// Global handlers cover outside-click dismissal, keyboard escape, and tab sync.
 document.addEventListener("click", (event) => {
   if (!elements.addMenuWrap.contains(event.target)) closeAddMenu();
 });
@@ -432,6 +599,7 @@ window.addEventListener("storage", (event) => {
   }
 });
 
+// Prime derived labels synchronously, then hydrate the model library from disk.
 elements.transcript.dispatchEvent(new Event("input"));
 loadModels().catch((error) => {
   elements.voiceList.textContent = "Voice library unavailable.";

@@ -227,7 +227,8 @@ select, #hfUrl, #hfToken { width: 100%; padding: 12px 14px; border: 1px solid va
 /* Reserved preview area keeps both studio cards at a stable height. */
 .result-slot { min-height: 92px; padding-top: 22px; }
 .result { margin-top: 0; padding: 15px; border: 1px solid var(--accent-soft-border); border-radius: 12px; background: var(--accent-soft); }
-.result, .result-copy { display: flex; align-items: center; gap: 12px; }
+.result-toolbar, .result-copy { display: flex; align-items: center; gap: 12px; }
+.result-toolbar { width: 100%; }
 .result-copy { flex: 0 0 auto; }
 .result-icon { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 10px; background: var(--accent); color: var(--accent-contrast); font-size: 22px; }
 .result-copy b, .result-copy span { display: block; }
@@ -236,6 +237,13 @@ select, #hfUrl, #hfToken { width: 100%; padding: 12px 14px; border: 1px solid va
 audio { min-width: 180px; width: 100%; height: 36px; }
 .download-button { flex: 0 0 auto; padding: 9px 12px; border: 1px solid var(--control-border); border-radius: 8px; color: var(--text); background: var(--surface-solid); text-decoration: none; font-size: 11px; font-weight: 700; }
 .download-button span { margin-left: 4px; }
+.sentence-timeline { display: grid; gap: 5px; max-height: 190px; margin-top: 13px; padding-top: 12px; overflow-y: auto; border-top: 1px solid var(--accent-soft-border); scrollbar-gutter: stable; }
+.sentence-timeline[hidden] { display: none; }
+.sentence-cue { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 10px; width: 100%; padding: 8px 10px; border: 1px solid transparent; border-radius: 8px; color: var(--text-muted); background: transparent; cursor: pointer; font: inherit; line-height: 1.45; text-align: left; transition: background 140ms ease, border-color 140ms ease, color 140ms ease; }
+.sentence-cue:hover { color: var(--text); background: var(--surface-muted); }
+.sentence-cue.active { border-color: var(--accent-soft-border); color: var(--text); background: var(--surface-solid); box-shadow: inset 3px 0 0 var(--accent); }
+.sentence-cue-time { padding-top: 1px; color: var(--accent); font-size: 10px; font-variant-numeric: tabular-nums; font-weight: 800; }
+.sentence-cue-text { min-width: 0; font-size: 12px; }
 
 /* Local-privacy footer. */
 footer { display: flex; justify-content: space-between; gap: 24px; padding: 30px 2px 50px; color: var(--text-subtle); font-size: 11px; }
@@ -291,6 +299,14 @@ summary { color: var(--text-muted); cursor: pointer; font-size: 11px; font-weigh
   .format-control { grid-column: 1 / -1; }
 }
 
+/* Portrait layouts put the transcript and generated player before model selection. */
+@media (orientation: portrait) {
+  .studio-grid { grid-template-columns: 1fr; }
+  .editor-panel { order: 1; }
+  .voice-panel { order: 2; contain: none; overflow: visible; }
+  .voice-list { flex: 0 1 auto; max-height: 320px; }
+}
+
 /* Phone layout: compact header, controls, dialogs, and stacked actions. */
 @media (max-width: 600px) {
   main { width: min(100% - 24px, 1180px); }
@@ -311,7 +327,7 @@ summary { color: var(--text-muted); cursor: pointer; font-size: 11px; font-weigh
   textarea { height: 240px; padding: 16px; font-size: 17px; }
   .control-row { grid-template-columns: 1fr; }
   .format-control { grid-column: auto; }
-  .action-row, .result, footer, .dialog-actions { align-items: stretch; flex-direction: column; }
+  .action-row, .result-toolbar, footer, .dialog-actions { align-items: stretch; flex-direction: column; }
   .primary-button { width: 100%; }
   .result-copy { align-self: flex-start; }
   footer { display: flex; }

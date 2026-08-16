@@ -10,16 +10,18 @@ ONNXTTS is a local web application with a dependency-free Node.js ES module serv
 
 ONNXTTS 是一个本地 Web 应用，服务端使用无第三方运行时依赖的 Node.js ES Modules，客户端使用原生 HTML/CSS/JavaScript。Node 负责 HTTP、模型发现、下载、上传、请求验证和进程编排；项目内 Python 负责 Piper 推理；项目内 FFmpeg 负责可选的 MP3 转换。
 
-The normal request path is browser → Node HTTP server → isolated Python bridge → Piper/ONNX Runtime → WAV, followed by project-local FFmpeg when MP3 is requested.
+The normal request path is browser → Node HTTP validation and bounded FIFO queue → one worker thread per accepted job → isolated Python bridge → Piper/ONNX Runtime → WAV, followed by project-local FFmpeg when MP3 is requested.
 
-正常请求链路为：浏览器 → Node HTTP 服务 → 隔离的 Python 桥接脚本 → Piper/ONNX Runtime → WAV；请求 MP3 时再调用项目内 FFmpeg。
+正常请求链路为：浏览器 → Node HTTP 验证与有界 FIFO 队列 → 每个已接收任务独立的 worker thread → 隔离的 Python 桥接脚本 → Piper/ONNX Runtime → WAV；请求 MP3 时再调用项目内 FFmpeg。
 
 | File / 文件 | Responsibility / 职责 |
 | --- | --- |
 | `server.mjs` | Composition root, model library, Hugging Face inspection/download, custom uploads / 组合入口、模型库、Hugging Face 检查与下载、自定义上传 |
 | `server/web.js` | HTTP routes, parsers, static/media responses, error mapping, security headers / HTTP 路由、解析器、静态与媒体响应、错误映射、安全响应头 |
-| `server/onnx-runtime.js` | Platform runtime selection, bootstrap, child processes, MP3 conversion, synthesis lock / 平台运行时选择、引导安装、子进程、MP3 转换、合成锁 |
-| `tools/synthesize_piper.py` | Narrow JSON-free CLI bridge from Node to Piper / Node 到 Piper 的窄命令行桥接层 |
+| `server/onnx-runtime.js` | Runtime selection, request preparation, CPU sizing, and worker dispatch / 运行时选择、任务准备、CPU 并发推断与 worker 派发 |
+| `server/bounded-fifo-queue.js` | Generic bounded FIFO scheduling and overload errors / 通用有界 FIFO 调度与过载错误 |
+| `server/synthesis-worker.js` | One-job Python/FFmpeg process orchestration and cleanup / 单任务 Python/FFmpeg 进程编排与清理 |
+| `tools/synthesize_piper.py` | Sentence synthesis bridge and PCM timing metadata / 分句合成桥接与 PCM 时间元数据 |
 | `tools/set_local_env.ps1` | Windows runtime installer and verifier / Windows 运行时安装与验证 |
 | `set_local_env.sh` | Linux x86_64 runtime installer and verifier / Linux x86_64 运行时安装与验证 |
 | `tools/download_runtime_asset.mjs` | Linux HTTPS downloader, cache reuse, and SHA-256 verification / Linux HTTPS 下载、缓存复用与 SHA-256 校验 |
@@ -90,17 +92,17 @@ The installer import-checks Piper, NumPy, and ONNX Runtime before marking Python
 
 ## Synthesis flow / 合成流程
 
-`renderAudio` validates transcript length, model identity, format, speed, silence, volume, and speaker bounds. It writes transcript text to a UTF-8 temporary file so text is never interpolated into a shell command, then spawns Python without a shell.
+`prepareJob` validates transcript length, model identity, format, speed, silence, volume, and speaker bounds on the main thread. `Intl.Segmenter` creates a multilingual sentence list before the request enters the scheduler; a punctuation-based fallback is retained for runtimes without `Intl.Segmenter`.
 
-`renderAudio` 会验证文本长度、模型身份、格式、语速、静音、音量和说话人范围。文本先写入 UTF-8 临时文件，避免被插入 shell 命令；随后在不使用 shell 的情况下启动 Python。
+`prepareJob` 在主线程验证文本长度、模型身份、格式、语速、静音、音量和说话人范围。请求进入调度器前由 `Intl.Segmenter` 生成多语言句子列表；若运行时没有 `Intl.Segmenter`，则使用基于标点的后备分句。
 
-The Python bridge verifies the matching `.onnx.json`, loads the selected Piper voice, streams signed 16-bit mono chunks into a WAV file, inserts zero-valued PCM for sentence silence, and prints one final JSON metadata line. Partial WAV files are removed after exceptions.
+The Python bridge verifies the matching `.onnx.json`, loads the selected Piper voice once, and synthesizes the supplied sentences separately. It records each start and end from the actual signed 16-bit PCM frame count, inserts zero-valued PCM between sentences, and returns the timing list in its final JSON line. Partial WAV files are removed after exceptions.
 
-Python 桥接脚本会验证匹配的 `.onnx.json`，加载选定 Piper 语音，把有符号 16 位单声道数据块流式写入 WAV，并插入零值 PCM 实现句间静音，最后输出一行 JSON 元数据。发生异常时会删除不完整 WAV。
+Python 桥接脚本会验证匹配的 `.onnx.json`，只加载一次所选 Piper 语音，再逐句合成传入的句子。每句起止时间按实际有符号 16 位 PCM 帧数记录，句间写入零值 PCM，最后一行 JSON 返回完整时间列表；发生异常时会删除不完整 WAV。
 
-For MP3, Node invokes the project-local FFmpeg with `libmp3lame`, removes the intermediate WAV, and returns public media/download URLs. A process-local lock permits only one synthesis job at a time; concurrent requests receive HTTP 409 rather than loading two large ONNX models.
+`BoundedFifoQueue` starts up to a CPU-derived number of jobs concurrently, capped at four by default, and keeps a finite first-in, first-out waiting list. Every running job owns a fresh Node worker thread, isolated temporary inputs, Python process, and optional project-local FFmpeg process. A full queue rejects immediately with HTTP 429 and the shared overload message. MP3 responses retain the WAV-derived timings; encoder delay can cause only a small playback-level offset.
 
-生成 MP3 时，Node 使用项目内 FFmpeg 的 `libmp3lame`，删除中间 WAV，再返回公开的媒体与下载 URL。进程内锁同一时间只允许一个合成任务；并发请求返回 HTTP 409，避免同时加载两个大型 ONNX 模型。
+`BoundedFifoQueue` 最多并行启动按 CPU 推断的任务数，默认不超过四个，并维护容量有限的先进先出等待列表。每个运行任务都有新的 Node worker thread、隔离的临时输入、Python 进程以及可选的项目内 FFmpeg 进程。队列满时立即以 HTTP 429 和统一过载提示拒绝。MP3 响应沿用 WAV 计算出的时间戳；编码器延迟只可能带来很小的播放层偏差。
 
 ## Model handling / 模型处理
 
@@ -121,13 +123,13 @@ Hugging Face 输入支持 repository、tree、blob 与 resolve URL，但网络�
 | `POST` | `/api/models/inspect` | Inspect a Hugging Face model pair / 检查 Hugging Face 模型对 |
 | `POST` | `/api/models/download` | Download one selected pair / 下载一组已选择模型 |
 | `POST` | `/api/models/upload` | Upload custom ONNX and JSON / 上传自定义 ONNX 与 JSON |
-| `POST` | `/api/generate` | Generate WAV or MP3 / 生成 WAV 或 MP3 |
+| `POST` | `/api/generate` | Generate audio plus sentence `text`/`start`/`end` timings / 生成音频及句子 `text`/`start`/`end` 时间 |
 | `GET` | `/media/{file}` | Inline audio response / 内联音频响应 |
 | `GET` | `/api/download/{file}` | Attachment audio response / 附件音频响应 |
 
-The transport layer applies CSP, `X-Content-Type-Options`, and related headers, bounds JSON and multipart bodies, maps expected request errors to HTTP status codes, and prevents path traversal for public and audio files.
+The transport layer applies CSP, `X-Content-Type-Options`, and related headers, bounds JSON and multipart bodies, maps expected request errors to HTTP status codes, and prevents path traversal for public and audio files. Generated preview audio advertises byte ranges, returns 206 for one satisfiable range, and returns 416 with the complete size for invalid or multipart ranges so browser seeking remains reliable.
 
-传输层设置 CSP、`X-Content-Type-Options` 等响应头，限制 JSON 与 multipart 请求体大小，把预期请求错误映射为 HTTP 状态码，并阻止 public 与音频文件的路径越界。
+传输层设置 CSP、`X-Content-Type-Options` 等响应头，限制 JSON 与 multipart 请求体大小，把预期请求错误映射为 HTTP 状态码，并阻止 public 与音频文件的路径越界。生成的预览音频会声明字节范围支持：单个有效范围返回 206，无效或 multipart 范围返回 416 并附完整大小，从而保证浏览器跳转可靠。
 
 Remote model files are limited to 2 GB, custom ONNX uploads to 1 GB, configuration JSON to 5 MB, and transcripts to 50,000 characters. The default bind address is `127.0.0.1`.
 
@@ -143,6 +145,10 @@ The Voice Library groups ordinary models by language code and custom uploads und
 
 Voice Library 按语言代码分组普通模型，并把自定义上传放在 `custom` 下。加号菜单负责 Hugging Face 与自定义上传对话框。桌面和移动布局让语音列表与对话框内部滚动，避免页面横向溢出。
 
+The generated sentence buttons are built from the API timing list with text-only DOM operations. Playback uses `requestAnimationFrame` while audio is running and `timeupdate`/`seeked` fallbacks to update `aria-current` and the light highlight. Clicking a button seeks to its recorded start. A portrait-only media rule visually orders the editor before Voice Library without changing desktop DOM order.
+
+生成后的句子按钮只通过文本 DOM 操作从 API 时间列表构建。音频播放时使用 `requestAnimationFrame`，并以 `timeupdate`/`seeked` 为后备来更新 `aria-current` 和浅色高亮；点击按钮会跳到记录的起点。仅竖屏生效的媒体规则会把编辑区排在 Voice Library 前面，不改变桌面的 DOM 顺序。
+
 ## Overrides and startup / 覆盖变量与启动
 
 Port priority is `--port`/`-p`, then `ONNXTTS_PORT`, then `4317`. `ONNXTTS_HOST` defaults to `127.0.0.1`. The Windows launcher resolves Node from `PATH` and then scans standard `Program Files\nodejs` locations on drives C through F; the Linux launcher requires Node in `PATH`.
@@ -157,6 +163,24 @@ The `-open` and `--open` flags take priority over `ONNXTTS_HOST` and force the b
 
 `ONNXTTS_PYTHON`、`ONNXTTS_PIPER_RUNTIME` 与 `ONNXTTS_FFMPEG` 可用于高级调试并覆盖受管路径。只有未被覆盖的组件才要求默认运行时就绪，但平台启动器仍会拒绝明显冲突的 `.local-env`，以防误用。
 
+`ONNXTTS_SYNTHESIS_WORKERS` overrides the CPU-derived concurrency from 1 through 32. `ONNXTTS_SYNTHESIS_QUEUE_LIMIT` overrides the number of waiting jobs from 1 through 1000. Invalid values are ignored with a startup warning. `/api/health` exposes CPU parallelism and the current worker, active, queued, and limit values under `runtime.queue`.
+
+`ONNXTTS_SYNTHESIS_WORKERS` 可把按 CPU 推断的并发数覆盖为 1 到 32；`ONNXTTS_SYNTHESIS_QUEUE_LIMIT` 可把等待任务数覆盖为 1 到 1000。无效值会被忽略，并在启动时给出警告。`/api/health` 会在 `runtime.queue` 下公开 CPU 并行度以及当前 worker、运行中、等待中和上限数值。
+
+## Queue debug paths / 队列调试入口
+
+The scheduler can be tested without HTTP, Piper, a model, or audio generation. This command uses fake timed jobs to assert FIFO start order, the concurrency ceiling, the waiting limit, and the exact HTTP-facing overload error:
+
+调度器可以脱离 HTTP、Piper、模型和音频生成独立测试。下面的命令使用带假延迟的任务，断言 FIFO 启动顺序、并发上限、等待上限以及对 HTTP 暴露的准确过载错误：
+
+```powershell
+node tools\debug_synthesis_queue.mjs
+```
+
+The queue-full interface can be tested independently of synthesis by opening `http://127.0.0.1:4317/?queueDebug=full`. This explicit query mode supplies one fake voice and makes Generate return the same delayed 429 message entirely in the browser; URLs without the query use the real API.
+
+满队列界面可以脱离合成独立测试：打开 `http://127.0.0.1:4317/?queueDebug=full`。这一显式查询模式会提供一个假语音，并让 Generate 完全在浏览器内延迟返回相同的 429 提示；不带该查询参数的 URL 仍使用真实 API。
+
 ## Maintenance checks / 维护检查
 
 Run the following on Windows after relevant changes:
@@ -168,9 +192,12 @@ Run the following on Windows after relevant changes:
 node --check server.mjs
 node --check server\web.js
 node --check server\onnx-runtime.js
+node --check server\bounded-fifo-queue.js
+node --check server\synthesis-worker.js
 node --check public\app.js
 node --check public\theme.js
 node --check tools\download_runtime_asset.mjs
+node tools\debug_synthesis_queue.mjs
 & '.\.local-env\python\python.exe' -I -m py_compile tools\synthesize_piper.py
 ```
 
@@ -185,19 +212,22 @@ sh ./set_local_env.sh -status
 node --check server.mjs
 node --check server/web.js
 node --check server/onnx-runtime.js
+node --check server/bounded-fifo-queue.js
+node --check server/synthesis-worker.js
 node --check tools/download_runtime_asset.mjs
+node tools/debug_synthesis_queue.mjs
 .local-env/python/bin/python3 -I -m py_compile tools/synthesize_piper.py
 ```
 
-An end-to-end smoke test should start on a non-default port, check `/api/health` and `/api/models`, generate a real WAV and MP3, validate MP3 with project-local FFprobe, and stop the server cleanly. Browser QA should cover desktop and mobile widths, dialogs, theme restoration, recent voices, custom upload, and console errors.
+An end-to-end smoke test should start on a non-default port, inspect `runtime.queue` from `/api/health`, check `/api/models`, generate a multi-sentence WAV and MP3, verify monotonic timings, validate MP3 with project-local FFprobe, and stop the server cleanly. Browser QA should cover portrait ordering, sentence highlighting and seeking, the queue-full debug mode, desktop/mobile widths, dialogs, theme restoration, and console errors.
 
-端到端烟雾测试应使用非默认端口启动，检查 `/api/health` 与 `/api/models`，真实生成 WAV 和 MP3，使用项目内 FFprobe 验证 MP3，并正常停止服务。浏览器 QA 应覆盖桌面与移动宽度、对话框、主题恢复、最近语音、自定义上传和控制台错误。
+端到端烟雾测试应使用非默认端口启动，从 `/api/health` 检查 `runtime.queue`，检查 `/api/models`，真实生成多句 WAV 和 MP3，验证时间戳单调递增，再用项目内 FFprobe 校验 MP3，并正常停止服务。浏览器 QA 应覆盖竖屏顺序、句子高亮与跳转、满队列调试模式、桌面/移动宽度、对话框、主题恢复和控制台错误。
 
 ## Known constraints and licensing / 已知限制与许可
 
-The bundled installers currently target Windows x64 and Linux x86_64. Only Piper-compatible ONNX voices are supported. Synthesis has a single-job lock but no queue, progress stream, or cancellation. Hugging Face inspection is deliberately non-recursive; generated audio has no retention policy; `/media` has no HTTP Range support.
+The bundled installers currently target Windows x64 and Linux x86_64. Only Piper-compatible ONNX voices are supported. The synthesis queue has no position/progress stream, cancellation, or active-worker termination during graceful shutdown. Hugging Face inspection is deliberately non-recursive; generated audio has no retention policy; `/media` supports one byte range per request but not multipart ranges.
 
-内置安装器目前面向 Windows x64 与 Linux x86_64。只支持 Piper 兼容 ONNX 语音。合成只有单任务锁，没有队列、进度流或取消。Hugging Face 检查有意不递归；生成音频没有保留策略；`/media` 不支持 HTTP Range。
+内置安装器目前面向 Windows x64 与 Linux x86_64。只支持 Piper 兼容 ONNX 语音。合成队列不提供排位/进度流、取消，也不会在优雅关闭时主动终止正在运行的 worker。Hugging Face 检查有意不递归；生成音频没有保留策略；`/media` 每次请求支持一个字节范围，但不支持 multipart ranges。
 
 Piper is GPL-3.0-or-later. The selected Windows and Linux FFmpeg builds are GPLv3 builds. Model licenses vary by model card. Any redistribution must preserve the applicable notices and satisfy the licenses for bundled binaries and models.
 

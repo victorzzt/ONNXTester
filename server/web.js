@@ -52,18 +52,57 @@ async function readJson(request, limit = 128 * 1024) {
   }
 }
 
+/** Parses one RFC 7233 byte range; false means the request is unsatisfiable. */
+function parseByteRange(value, size) {
+  if (!value) return null;
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(value.trim());
+  if (!match || (!match[1] && !match[2]) || size < 1) return false;
+
+  let start;
+  let end;
+  if (!match[1]) {
+    const suffixLength = Number(match[2]);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength < 1) return false;
+    start = Math.max(0, size - suffixLength);
+    end = size - 1;
+  } else {
+    start = Number(match[1]);
+    end = match[2] ? Number(match[2]) : size - 1;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= size) return false;
+    end = Math.min(end, size - 1);
+  }
+  return { start, end };
+}
+
 /** Streams a known local file with the same security policy as API responses. */
 async function streamFile(response, filePath, options = {}) {
   const fileStats = await stat(filePath);
   const extension = path.extname(filePath).toLowerCase();
-  response.writeHead(200, {
+  const rangeEnabled = Object.hasOwn(options, "rangeHeader");
+  const range = rangeEnabled ? parseByteRange(options.rangeHeader, fileStats.size) : null;
+  const commonHeaders = {
     ...SECURITY_HEADERS,
     "Content-Type": CONTENT_TYPES.get(extension) || "application/octet-stream",
-    "Content-Length": fileStats.size,
     "Cache-Control": options.cache || "no-cache",
+    ...(rangeEnabled ? { "Accept-Ranges": "bytes" } : {}),
     ...(options.downloadName ? { "Content-Disposition": `attachment; filename="${options.downloadName.replace(/["\\\r\n]/g, "_")}"` } : {}),
+  };
+
+  if (range === false) {
+    response.writeHead(416, { ...commonHeaders, "Content-Range": `bytes */${fileStats.size}`, "Content-Length": 0 });
+    response.end();
+    return;
+  }
+
+  const partial = range != null;
+  const start = partial ? range.start : 0;
+  const end = partial ? range.end : fileStats.size - 1;
+  response.writeHead(partial ? 206 : 200, {
+    ...commonHeaders,
+    "Content-Length": end - start + 1,
+    ...(partial ? { "Content-Range": `bytes ${start}-${end}/${fileStats.size}` } : {}),
   });
-  createReadStream(filePath).pipe(response);
+  createReadStream(filePath, partial ? { start, end } : undefined).pipe(response);
 }
 
 /** Resolves a URL segment without allowing traversal outside its root. */
@@ -143,7 +182,7 @@ export function createWebServer({
       if (request.method === "GET" && url.pathname.startsWith("/media/")) {
         const filePath = safeChild(audioRoot, url.pathname.slice("/media/".length));
         if (!filePath || !existsSync(filePath)) return sendError(response, 404, "Audio file not found");
-        return streamFile(response, filePath, { cache: "private, max-age=3600" });
+        return streamFile(response, filePath, { cache: "private, max-age=3600", rangeHeader: request.headers.range });
       }
       if (request.method === "GET" && url.pathname.startsWith("/api/download/")) {
         const filePath = safeChild(audioRoot, url.pathname.slice("/api/download/".length));
@@ -161,7 +200,7 @@ export function createWebServer({
 
       return sendError(response, 404, "Not found");
     } catch (error) {
-      console.error(error);
+      if (!error.statusCode || error.statusCode >= 500) console.error(error);
       return sendError(
         response,
         error.statusCode || 500,
