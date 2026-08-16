@@ -149,6 +149,10 @@ Port priority is `--port`/`-p`, then `ONNXTTS_PORT`, then `4317`. `ONNXTTS_HOST`
 
 端口优先级依次为 `--port`/`-p`、`ONNXTTS_PORT`、`4317`。`ONNXTTS_HOST` 默认为 `127.0.0.1`。Windows 启动器先从 `PATH` 解析 Node，再扫描 C 到 F 盘的标准 `Program Files\nodejs` 路径；Linux 启动器要求 Node 位于 `PATH`。
 
+The `-open` and `--open` flags take priority over `ONNXTTS_HOST` and force the bind address to `0.0.0.0`. In that mode `/api/health` reports `localOnly: false`; the application does not add authentication, TLS, or firewall rules.
+
+`-open` 与 `--open` 的优先级高于 `ONNXTTS_HOST`，会强制把监听地址设为 `0.0.0.0`。此模式下 `/api/health` 返回 `localOnly: false`；应用不会自动增加身份验证、TLS 或防火墙规则。
+
 `ONNXTTS_PYTHON`, `ONNXTTS_PIPER_RUNTIME`, and `ONNXTTS_FFMPEG` override managed paths for advanced debugging. The default runtime is considered required only for components without an override, but platform launchers still reject a visibly conflicting `.local-env` to prevent accidental reuse.
 
 `ONNXTTS_PYTHON`、`ONNXTTS_PIPER_RUNTIME` 与 `ONNXTTS_FFMPEG` 可用于高级调试并覆盖受管路径。只有未被覆盖的组件才要求默认运行时就绪，但平台启动器仍会拒绝明显冲突的 `.local-env`，以防误用。

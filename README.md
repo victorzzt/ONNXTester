@@ -21,6 +21,8 @@ Double-click `start_onnxtts.cmd`, or run it from Command Prompt or PowerShell:
 ```cmd
 start_onnxtts.cmd
 start_onnxtts.cmd --port 5000
+start_onnxtts.cmd -open
+start_onnxtts.cmd -open --port 5000
 ```
 
 The launcher first uses `node.exe` from `PATH`. If it is not there, it scans `C:\Program Files\nodejs\node.exe` through `F:\Program Files\nodejs\node.exe` in drive-letter order. Only after all four locations fail does it ask you to install Node.js.
@@ -36,6 +38,8 @@ Run the Linux launcher with `sh`:
 ```sh
 sh ./start_onnxtts.sh
 sh ./start_onnxtts.sh --port 5000
+sh ./start_onnxtts.sh -open
+sh ./start_onnxtts.sh -open --port 5000
 ```
 
 The Linux launcher uses Node.js from `PATH` and requires version 20 or newer.
@@ -45,6 +49,14 @@ Linux 启动器使用 `PATH` 中的 Node.js，并要求版本不低于 20。
 After startup, open the address printed in the terminal. The default is <http://127.0.0.1:4317>. Press `Ctrl+C` to stop the server.
 
 启动后请打开终端中显示的地址，默认为 <http://127.0.0.1:4317>。按 `Ctrl+C` 可停止服务。
+
+Pass `-open` (or `--open`) to listen on `0.0.0.0` and allow other devices to connect through this computer's LAN IP, for example `http://192.168.1.20:4317`. You may also need to allow the port through the operating-system firewall.
+
+传入 `-open`（或 `--open`）后，服务会监听 `0.0.0.0`，其他设备可以通过本机局域网 IP 访问，例如 `http://192.168.1.20:4317`。可能还需要在操作系统防火墙中放行该端口。
+
+Open mode has no user authentication. Use it only on a trusted network; do not expose the port directly to the public internet.
+
+开放模式没有用户身份验证。请只在可信网络中使用，不要把该端口直接暴露到公网。
 
 ## First launch and local runtime / 首次启动与本地运行时
 

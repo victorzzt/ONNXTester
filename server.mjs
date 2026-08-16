@@ -45,13 +45,19 @@ function commandLineOption(longName, shortName) {
   return undefined;
 }
 
+function commandLineFlag(...names) {
+  return process.argv.slice(2).some((argument) => names.includes(argument));
+}
+
 const requestedPort = commandLineOption("--port", "-p") ?? process.env.ONNXTTS_PORT ?? "4317";
 const PORT = Number(requestedPort);
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
   throw new Error(`Invalid ONNXTTS port: ${requestedPort}. Use an integer from 1 to 65535.`);
 }
 
-const HOST = process.env.ONNXTTS_HOST || "127.0.0.1";
+const HOST = commandLineFlag("-open", "--open")
+  ? "0.0.0.0"
+  : process.env.ONNXTTS_HOST || "127.0.0.1";
 const MODEL_ROOTS = [LOCAL_MODEL_ROOT];
 
 // Create only project-owned data folders; voice models and outputs stay local.
