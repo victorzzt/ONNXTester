@@ -4,6 +4,8 @@ ONNXTTS turns pasted text into WAV or MP3 audio with Piper-compatible ONNX voice
 
 ONNXTTS 使用 Piper 兼容的 ONNX 语音把粘贴的文本生成 WAV 或 MP3。浏览器界面、模型、生成的音频、Python/Piper 运行时和 FFmpeg 运行时都保存在项目内；无需执行 `npm install`，也不依赖系统 Python、Conda 或系统 FFmpeg。
 
+![ONNXTTS Local Voice Studio preview](preview01.png)
+
 ## Requirements / 运行要求
 
 Install Node.js 20 or newer. Windows x64 and Linux x86_64 have project-local runtime installers; Linux also needs the standard `sh` and `tar` utilities normally included with the operating system.
