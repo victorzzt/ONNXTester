@@ -24,6 +24,7 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $RuntimeRoot = Join-Path $ProjectRoot ".local-env"
 $PythonRoot = Join-Path $RuntimeRoot "python"
 $PythonExe = Join-Path $PythonRoot "python.exe"
+$LinuxPythonExe = Join-Path $PythonRoot "bin\python3"
 $PackagesRoot = Join-Path $RuntimeRoot "packages"
 $PiperModule = Join-Path $PackagesRoot "piper\__init__.py"
 $OnnxRuntimeModule = Join-Path $PackagesRoot "onnxruntime\__init__.py"
@@ -65,6 +66,26 @@ function Test-LocalFfmpeg {
 
 function Test-LocalEnvironment {
     return (Test-LocalPythonEnvironment) -and (Test-LocalFfmpeg)
+}
+
+# A checkout may be moved between platforms while .local-env is left behind.
+# Detect Linux artifacts but never remove or replace them without -clear.
+function Test-LinuxEnvironment {
+    if (Test-Path -LiteralPath $LinuxPythonExe -PathType Leaf) {
+        return $true
+    }
+    if (Test-Path -LiteralPath $InstallMarker -PathType Leaf) {
+        try {
+            $marker = Get-Content -LiteralPath $InstallMarker -Raw | ConvertFrom-Json
+            if ([string] $marker.architecture -like "linux-*") {
+                return $true
+            }
+        }
+        catch {
+            # An unreadable marker is handled by the ordinary readiness checks.
+        }
+    }
+    return $false
 }
 
 # ---------------------------------------------------------------------------
@@ -403,6 +424,15 @@ function Install-LocalEnvironment {
     Write-Host "Python: $PythonExe"
     Write-Host "Packages: $PackagesRoot"
     Write-Host "FFmpeg: $FfmpegExe"
+}
+
+# Cross-platform replacement is never automatic. The user must opt in to the
+# already safety-checked -clear action before installing on this platform.
+if ($Action -ne "clear" -and (Test-LinuxEnvironment)) {
+    Write-Host "A Linux project-local Python/Piper environment is already present in .local-env."
+    Write-Host "ONNXTTS will not remove or replace an environment from another platform."
+    Write-Host "Run set_local_env.cmd -clear manually, then run the requested action again."
+    exit 2
 }
 
 # Dispatch exactly one normalized action supplied by set_local_env.cmd.

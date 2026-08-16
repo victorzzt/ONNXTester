@@ -31,11 +31,15 @@ function httpError(message, statusCode) {
  * process adapter while still allowing it to validate a requested model.
  */
 export function createOnnxRuntime({ root, audioRoot, tempRoot, scanModels, toPublicModel }) {
+  const isWindows = process.platform === "win32";
+  const isLinux = process.platform === "linux";
   const localEnvironmentRoot = path.join(root, ".local-env");
-  const localPython = path.join(localEnvironmentRoot, "python", "python.exe");
+  const localPython = isWindows
+    ? path.join(localEnvironmentRoot, "python", "python.exe")
+    : path.join(localEnvironmentRoot, "python", "bin", "python3");
   const localPackages = path.join(localEnvironmentRoot, "packages");
-  const localFfmpeg = path.join(localEnvironmentRoot, "ffmpeg", "bin", "ffmpeg.exe");
-  const localSetup = path.join(root, "set_local_env.cmd");
+  const localFfmpeg = path.join(localEnvironmentRoot, "ffmpeg", "bin", isWindows ? "ffmpeg.exe" : "ffmpeg");
+  const localSetup = path.join(root, isWindows ? "set_local_env.cmd" : "set_local_env.sh");
   const localMarker = path.join(localEnvironmentRoot, "install.json");
 
   // Explicit environment variables remain supported for advanced users.
@@ -61,19 +65,21 @@ export function createOnnxRuntime({ root, audioRoot, tempRoot, scanModels, toPub
   // A missing default runtime is installed before the HTTP server starts.
   function ensureLocalEnvironment() {
     if (requiredLocalEnvironmentReady()) return;
-    if (process.platform !== "win32") {
-      throw new Error("The bundled runtime installer currently supports Windows only.");
+    if (!isWindows && !isLinux) {
+      throw new Error(`The bundled runtime installer does not support ${process.platform}.`);
     }
     if (!existsSync(localSetup)) {
       throw new Error("The local runtime is incomplete and " + localSetup + " was not found.");
     }
 
     console.log("Project-local runtime dependencies are missing. Installing them now...");
-    const commandProcessor = process.env.ComSpec || "cmd.exe";
-    const result = spawnSync(commandProcessor, ["/d", "/c", "call", localSetup, "-install"], {
+    const installer = isWindows
+      ? { command: process.env.ComSpec || "cmd.exe", args: ["/d", "/c", "call", localSetup, "-install"] }
+      : { command: "sh", args: [localSetup, "-install"] };
+    const result = spawnSync(installer.command, installer.args, {
       cwd: root,
       stdio: "inherit",
-      windowsHide: false,
+      windowsHide: isWindows,
     });
     if (result.error) throw new Error("Unable to start the local environment installer: " + result.error.message);
     if (result.status !== 0) throw new Error("Local environment installation failed with exit code " + result.status + ".");
