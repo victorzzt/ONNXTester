@@ -57,6 +57,10 @@ function runProcess(command, args, { timeout = 10 * 60 * 1000, env = process.env
 
 async function renderAudio() {
   const { job, audioRoot, tempRoot, python, piperRuntime, ffmpeg, bridge } = workerData;
+
+  // Keep the existing timestamp-plus-UUID basename stable across audio, sidecar,
+  // URLs, and cleanup. Temporary inputs use the same id but live outside the
+  // persistent audio library.
   const jobId = `${Date.now()}-${randomUUID()}`;
   const transcriptPath = path.join(tempRoot, `${jobId}.txt`);
   const sentencesPath = path.join(tempRoot, `${jobId}.sentences.json`);
@@ -64,6 +68,9 @@ async function renderAudio() {
   const finalPath = path.join(audioRoot, `${jobId}.${job.format}`);
   const metadataPath = path.join(audioRoot, `${jobId}.json`);
   const metadataTempPath = path.join(tempRoot, `${jobId}.metadata.json`);
+
+  // The bridge reads files rather than workerData so a Python child never needs
+  // access to Node's in-memory job object.
   await Promise.all([
     writeFile(transcriptPath, job.text, "utf8"),
     writeFile(sentencesPath, JSON.stringify(job.sentences), "utf8"),
@@ -84,6 +91,8 @@ async function renderAudio() {
     if (job.speakerId != null) args.push("--speaker-id", String(job.speakerId));
 
     const rendered = await runProcess(python, ["-I", "-S", ...args], { env: isolatedPythonEnvironment() });
+    // synthesize_piper.py reserves its final stdout line for machine-readable
+    // PCM-derived metadata; earlier output may contain human diagnostic text.
     const metadataLine = rendered.stdout.split(/\r?\n/).at(-1);
     let details;
     try {
@@ -92,6 +101,8 @@ async function renderAudio() {
       throw new Error("The synthesis bridge did not return valid timing metadata.");
     }
 
+    // Timings remain those measured from the source PCM. MP3 conversion changes
+    // only the persisted audio format and never rewrites the timing list.
     if (job.format === "mp3") {
       await runProcess(ffmpeg, [
         "-hide_banner", "-loglevel", "error", "-y", "-i", wavPath,
@@ -101,6 +112,9 @@ async function renderAudio() {
     }
 
     const fileName = path.basename(finalPath);
+    // Schema version 1 stores only public model data and playback metadata. The
+    // final audio bytes are already complete at this point and are not reopened
+    // or modified while the sidecar is constructed.
     const metadata = {
       schemaVersion: 1,
       id: jobId,
@@ -117,6 +131,9 @@ async function renderAudio() {
         bitsPerSample: details.bitsPerSample,
       },
     };
+    // Publish the JSON only after a complete write. tempRoot and audioRoot are
+    // project-local siblings on the same volume, so rename gives readers either
+    // no sidecar or the complete sidecar, never a partially written JSON file.
     await writeFile(metadataTempPath, JSON.stringify(metadata, null, 2), "utf8");
     await rename(metadataTempPath, metadataPath);
 
@@ -129,11 +146,16 @@ async function renderAudio() {
       ...details,
     };
   } catch (error) {
+    // A job is successful only when audio and metadata both exist. Remove every
+    // possible persistent output on failure so the library cannot expose a half
+    // pair; force also makes cleanup safe when a file was never created.
     await rm(wavPath, { force: true });
     if (job.format === "mp3") await rm(finalPath, { force: true });
     await rm(metadataPath, { force: true });
     throw error;
   } finally {
+    // Inputs and an unpublished metadata file are always disposable, including
+    // after Python/FFmpeg errors or a successful final rename.
     await Promise.all([
       rm(transcriptPath, { force: true }),
       rm(sentencesPath, { force: true }),

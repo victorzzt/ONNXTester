@@ -497,8 +497,14 @@ async function generate() {
   }
 }
 
-// The recording library derives human labels from saved script text while UUID
-// basenames remain the only storage identifiers used by the API.
+/**
+ * Derives a short display label without ever changing the UUID storage name.
+ *
+ * Latin, Cyrillic, and Greek scripts have useful word boundaries, so their first
+ * two word-like segments become the label. For CJK and other scripts where a
+ * space-delimited "word" is not a reliable UI unit, the first 32 grapheme
+ * clusters are used; this avoids splitting emoji or combining characters.
+ */
 function recordingTitle(value) {
   const text = String(value || "").replace(/\s+/gu, " ").trim();
   if (!text) return "Untitled recording";
@@ -535,6 +541,9 @@ function recordingMeta(recording) {
     .join(" · ");
 }
 
+/** Returns a sorted copy so changing the dialog order never mutates the API
+ * response retained in state. Title comparison reuses the exact displayed label
+ * and time comparison treats a malformed date as the oldest possible value. */
 function sortedRecordings() {
   const recordings = [...state.recordings];
   if (state.recordingSort.startsWith("title")) {
@@ -551,6 +560,9 @@ function setRecordingStatus(message, error = false) {
   elements.recordingStatus.classList.toggle("error", error);
 }
 
+/** Keeps button visibility, disabled states, summary copy, and the list's visual
+ * mode derived from one selection Set. Load is deliberately unavailable during
+ * multi-select so a destructive selection cannot be mistaken for a load target. */
 function syncRecordingControls() {
   const selectedCount = state.recordingSelectedIds.size;
   const sort = RECORDING_SORTS.find((item) => item.id === state.recordingSort) || RECORDING_SORTS[0];
@@ -571,10 +583,17 @@ function syncRecordingControls() {
   }
 }
 
+// Pointer handling and destructive confirmation each use a small transient state
+// machine. The long-press timer is shared because only one primary pointer may
+// initiate selection at a time. `suppressRecordingClickId` consumes the synthetic
+// click browsers dispatch after pointerup. `pendingRecordingConfirmation` holds
+// either an immutable delete-id snapshot or Clear's current confirmation stage.
 let recordingPressTimer = null;
 let suppressRecordingClickId = null;
 let pendingRecordingConfirmation = null;
 
+/** Cancels visual press feedback. Suppression is cleared in the next task rather
+ * than immediately because the click following pointerup is dispatched first. */
 function cancelRecordingPress(card, id) {
   if (recordingPressTimer != null) window.clearTimeout(recordingPressTimer);
   recordingPressTimer = null;
@@ -586,6 +605,10 @@ function cancelRecordingPress(card, id) {
   }
 }
 
+/** Starts the 650 ms gesture and captures the pointer so minor movement within
+ * the row does not lose pointerup. On success the existing card is updated in
+ * place rather than re-rendered, preserving capture until release and preventing
+ * the release click from toggling the newly selected row back off. */
 function beginRecordingPress(event, card, recording) {
   if (event.button !== 0) return;
   if (recordingPressTimer != null) window.clearTimeout(recordingPressTimer);
@@ -604,6 +627,9 @@ function beginRecordingPress(event, card, recording) {
   }, RECORDING_LONG_PRESS_MS);
 }
 
+/** Applies normal single-select or multi-select semantics. Any open confirmation
+ * is closed first because its saved ids would otherwise no longer match what the
+ * user sees selected. Shift-click is the desktop equivalent of long-press. */
 function chooseRecording(recording, multi = false) {
   closeRecordingConfirmation();
   if (state.recordingMulti || multi) {
@@ -616,6 +642,9 @@ function chooseRecording(recording, multi = false) {
   renderRecordings();
 }
 
+/** Builds one text-only card. textContent prevents script metadata from becoming
+ * executable markup, while native button semantics retain keyboard activation
+ * and aria-pressed exposes selection to assistive technology. */
 function createRecordingCard(recording) {
   const card = document.createElement("button");
   card.type = "button";
@@ -670,6 +699,9 @@ function renderRecordings() {
   syncRecordingControls();
 }
 
+/** Refreshes server summaries and intersects the old selection with ids that
+ * still exist. This handles another window deleting a recording while the dialog
+ * is closed without leaving an invisible or unloadable selection behind. */
 async function refreshRecordings() {
   const data = await request("/api/recordings");
   state.recordings = Array.isArray(data.recordings) ? data.recordings : [];
@@ -696,6 +728,9 @@ async function openRecordingsDialog() {
   }
 }
 
+/** Removes a deleted recording from Preview only when Preview was loaded from
+ * that same library id. A freshly generated preview has no data-recording-id and
+ * therefore cannot be cleared accidentally by a library deletion response. */
 function clearLoadedRecordingIfDeleted(ids) {
   const loadedId = elements.result.dataset.recordingId;
   if (!loadedId || !ids.includes(loadedId)) return;
@@ -709,6 +744,10 @@ function clearLoadedRecordingIfDeleted(ids) {
   resetSentenceTimeline();
 }
 
+/** Loads only the validated `text` field into the editor and sends sentence cues
+ * to the existing timeline renderer. Assigning the media URL does not call play,
+ * so browsing history never produces unexpected audio; the user starts playback
+ * explicitly from the restored Preview controls. */
 async function loadSelectedRecording() {
   if (state.recordingMulti || state.recordingSelectedIds.size !== 1) return;
   closeRecordingConfirmation();
@@ -737,6 +776,9 @@ async function loadSelectedRecording() {
   }
 }
 
+/** Sends the narrow delete payload and then trusts the server's returned ids as
+ * the authoritative deletion set. Refreshing afterward reconciles concurrent
+ * changes and avoids duplicating filesystem assumptions in the browser. */
 async function deleteRecordingIds(ids, all = false) {
   const data = await request("/api/recordings", {
     method: "DELETE",
@@ -750,6 +792,16 @@ async function deleteRecordingIds(ids, all = false) {
   setRecordingStatus(`${deleted.length.toLocaleString()} recording${deleted.length === 1 ? "" : "s"} deleted.`);
 }
 
+/*
+ * Non-blocking destructive confirmation state machine:
+ *
+ *   selected ids -> Delete selected -> Confirm -> DELETE { ids }
+ *   all records  -> Clear -> Continue -> Permanently clear -> DELETE { all:true }
+ *
+ * Cancel or any selection change closes the bar without a request. The Clear
+ * stage counter makes two separate affirmative clicks observable and testable;
+ * no native alert/confirm dialog blocks the event loop.
+ */
 function renderRecordingConfirmation() {
   const pending = pendingRecordingConfirmation;
   if (!pending) return;
@@ -767,6 +819,9 @@ function renderRecordingConfirmation() {
   }
 }
 
+/** Expands the confirmation region, removes its inert state, and initially puts
+ * focus on the safer Cancel action. The buttons also receive explicit tab stops
+ * for browsers that only partially implement inert. */
 function openRecordingConfirmation(pending) {
   pendingRecordingConfirmation = pending;
   renderRecordingConfirmation();
@@ -778,6 +833,9 @@ function openRecordingConfirmation(pending) {
   window.requestAnimationFrame(() => elements.cancelRecordingConfirmation.focus());
 }
 
+/** Collapses and removes the confirmation region from keyboard navigation. A
+ * user-initiated Cancel may restore focus to the button that opened the flow;
+ * programmatic closes intentionally leave focus management to the next action. */
 function closeRecordingConfirmation(restoreFocus = false) {
   const trigger = pendingRecordingConfirmation?.kind === "clear" ? elements.clearRecordings : elements.deleteRecordings;
   pendingRecordingConfirmation = null;
@@ -800,6 +858,10 @@ function clearAllRecordings() {
   openRecordingConfirmation({ kind: "clear", stage: 1 });
 }
 
+/** Advances Clear from stage one to stage two without contacting the server.
+ * On the terminal confirmation (or the single Delete confirmation), `pending` is
+ * copied before closing because closeRecordingConfirmation deliberately clears
+ * the shared state. */
 async function confirmPendingRecordingAction() {
   const pending = pendingRecordingConfirmation;
   if (!pending) return;

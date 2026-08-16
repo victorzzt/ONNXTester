@@ -249,15 +249,57 @@ An end-to-end smoke test should start on a non-default port, inspect `runtime.qu
 
 端到端烟雾测试应使用非默认端口启动，从 `/api/health` 检查 `runtime.queue`，检查 `/api/models`，真实生成多句 WAV 和 MP3，验证每份同名 sidecar 和时间戳单调递增，再用项目内 FFprobe 校验 MP3，并正常停止服务。浏览器 QA 应覆盖竖屏顺序、句子高亮与跳转、录音列表、排序、加载与长按流程、两类破坏性操作的确认次数、满队列调试模式、桌面/移动宽度、对话框、主题恢复和控制台错误。
 
+## Extension roadmap and developer takeover / 扩展路线与开发者接手
+
+The current application is designed for one trusted local operator. The ideas in this section are extension points, not features that are already shipped. Any public or multi-user deployment must first replace the trust assumptions described under Overrides and startup; binding to `0.0.0.0` alone does not provide identity, authorization, encryption, or tenant isolation.
+
+当前应用面向单个可信的本地操作者。本节内容是可扩展方向，不代表这些功能已经实现。任何公网或多用户部署都必须先替换 Overrides and startup 中描述的信任前提；仅监听 `0.0.0.0` 并不会自动提供身份、授权、加密或租户隔离。
+
+User verification can be introduced as a request-context layer in `server/web.js`, with credentials and policy kept behind injected services in `server.mjs`. Possible methods include local accounts, passkeys, OIDC/OAuth 2.0, reverse-proxy identity headers, or scoped API tokens. A complete implementation also needs password hashing where applicable, secure and expiring sessions, cookie flags, CSRF protection, login throttling, account recovery, role-based permissions, and an explicit decision about which health or static routes remain public. Authentication answers who the caller is; every model, synthesis, recording, and deletion route must separately authorize what that caller may do.
+
+用户验证可以作为 `server/web.js` 的请求上下文层加入，而凭据与策略仍通过 `server.mjs` 注入的服务封装。可选方式包括本地账户、Passkey、OIDC/OAuth 2.0、反向代理身份请求头或带权限范围的 API token。完整实现还需要视情况提供密码哈希、安全且会过期的会话、Cookie 安全属性、CSRF 防护、登录限流、账户恢复、基于角色的权限，以及明确决定哪些健康检查或静态路由可以公开。身份验证回答“调用者是谁”，模型、合成、录音和删除路由仍需分别判断“该调用者可以做什么”。
+
+Multi-user sandboxing should derive an immutable tenant context immediately after authentication and carry it through model lookup, queue submission, worker data, recording metadata, and audit events. Replace global model/audio/temp roots with root-scoped tenant services, give each tenant independent storage and queue quotas, and ensure that ids valid for one tenant cannot be listed, loaded, downloaded, or deleted by another. Temporary files and failure cleanup must remain inside the same tenant root. Tests should attempt cross-tenant ids, guessed media URLs, concurrent deletion, quota exhaustion, and worker failures. Directory separation is an application boundary rather than a hardened operating-system sandbox; stronger isolation should use separate containers, users, or virtual machines.
+
+多用户沙盒应在身份验证后立即生成不可变的租户上下文，并把它传递到模型查询、队列提交、worker data、录音元数据和审计事件中。需要把全局模型、音频和临时目录替换为限定根目录的租户服务，为每个租户提供独立存储空间与队列配额，并保证某个租户的 ID 无法被另一个租户列出、加载、下载或删除。临时文件和失败清理也必须留在同一租户根目录内。测试应主动覆盖跨租户 ID、猜测媒体 URL、并发删除、配额耗尽和 worker 失败。目录隔离属于应用层边界，并不是强化后的操作系统沙盒；需要更强隔离时应使用独立容器、系统用户或虚拟机。
+
+Flat JSON sidecars are intentionally simple for a local installation. A shared deployment will probably need a transactional index such as SQLite for one node or PostgreSQL for several nodes, with tables for users, sessions, tenants, models, jobs, recordings, quotas, and audit events. Audio may remain on a versioned volume or move to object storage, while the database owns searchable metadata and access control. Schema migrations, backup and restore procedures, retention policies, export, account deletion, and reconciliation of missing audio/metadata should be designed before production data is accepted. Preserve the UUID audio/sidecar contract where practical, or provide an explicit versioned migration rather than silently changing it.
+
+扁平 JSON sidecar 是为本地安装有意选择的简单方案。共享部署通常需要事务型索引：单节点可以使用 SQLite，多节点可以使用 PostgreSQL，并建立用户、会话、租户、模型、任务、录音、配额和审计事件等表。音频可以继续保存在带版本的 volume 中，也可以迁移到对象存储；数据库负责可搜索元数据与访问控制。在接收生产数据前，应先设计 schema migration、备份与恢复、保留策略、导出、账户删除，以及音频或元数据缺失时的对账流程。应尽量保留 UUID 音频/sidecar 契约；如确需改变，应提供明确且带版本的迁移，不能静默修改。
+
+Related queue functions naturally include job ownership, queue position, progress events, cancellation, retry policy, per-user concurrency, tenant fairness, priority classes, and usage accounting. Server-Sent Events or WebSocket messages can report state without polling, but the queue then needs stable job records and reconnect behavior. Cancellation must propagate cooperatively from the HTTP/job layer through the worker thread to Python and FFmpeg, followed by the same partial-output cleanup guarantees used today. Preserve a finite global capacity even when tenant limits are added, and document whether overload returns HTTP 429, a queued job id, or both.
+
+与队列自然相关的功能还包括任务归属、队列位置、进度事件、取消、重试策略、单用户并发、租户公平性、优先级和用量统计。Server-Sent Events 或 WebSocket 可以避免轮询并报告状态，但队列需要稳定的任务记录和断线重连行为。取消操作必须从 HTTP/任务层协作式传递到 worker thread、Python 与 FFmpeg，随后继续使用现有的不完整输出清理保证。即使增加租户限制，也应保留有限的全局容量，并明确记录过载时返回 HTTP 429、已排队任务 ID，还是同时返回两者。
+
+A Docker Compose takeover should add a reviewed Linux `Dockerfile`, a non-root runtime user, a healthcheck against `/api/health`, an explicit container-internal bind address of `0.0.0.0`, a published host port, and named volumes for persistent models and recordings. The image build can install the pinned Linux runtime into its own image layer; do not share a host Windows `.local-env` with a Linux container. Compose settings should expose worker and queue limits, CPU and memory limits, restart and graceful-stop behavior, and optional model-cache volumes. A reverse proxy should terminate TLS and may supply authentication, request-size limits, and rate limiting. Multi-node synthesis should separate the web process, durable job broker, worker replicas, database, and shared/object storage instead of assuming an in-process queue is distributed.
+
+Docker Compose 接手方案应加入经过审查的 Linux `Dockerfile`、非 root 运行用户、针对 `/api/health` 的 healthcheck、容器内部明确监听 `0.0.0.0`、对外发布的宿主机端口，以及用于持久化模型和录音的 named volume。镜像构建可以把固定版本的 Linux 运行时安装到独立镜像层；不要让 Linux 容器复用宿主 Windows 的 `.local-env`。Compose 配置应暴露 worker 与队列上限、CPU 与内存限制、重启和优雅停止行为，并可提供模型缓存 volume。反向代理应负责 TLS，也可以提供身份验证、请求体限制和限流。多节点合成需要拆分 Web 进程、持久任务 broker、worker 副本、数据库和共享或对象存储，不能把进程内队列当作分布式队列。
+
+Operational extensions should include structured logs with request, job, user, and tenant ids; metrics for latency, queue depth, failures, storage, and model load time; readiness and liveness checks; secret injection; audit-log retention; alerts; backup verification; and graceful queue draining during deployment. Privacy controls should define who may inspect transcripts, how long text and audio remain, and how exports or deletions are proven complete. Security tests, migration tests, restore drills, load tests, and container smoke tests should join the existing unit and browser checks before a release is called multi-user ready.
+
+运维扩展应包括带 request、job、user 与 tenant ID 的结构化日志，覆盖延迟、队列深度、失败、存储和模型加载时间的指标，readiness 与 liveness 检查，secret 注入，审计日志保留，告警，备份验证，以及部署期间的队列优雅排空。隐私控制应明确谁可以查看脚本、文字与音频保留多久，以及如何证明导出或删除已经完整完成。在版本被称为“多用户可用”前，安全测试、迁移测试、恢复演练、负载测试和容器 smoke test 都应加入现有单元与浏览器检查。
+
+For a developer taking over the project, start by running every Maintenance check on a clean checkout and one real WAV/MP3 smoke test. Keep user workflows in `README.md` and implementation contracts in `DevNotes.md`; version persistent schemas and API changes; add temporary-root unit tests for every filesystem mutation; and add adversarial authorization tests before introducing tenants. Preserve the current boundaries: clients submit ids rather than paths, workers own synthesis cleanup, destructive UI actions require explicit confirmation, and platform runtimes are never silently reused or cleared. Document new environment variables, ports, volumes, secrets, migration order, rollback steps, and ownership of background jobs so the next maintainer can reproduce the deployment without private knowledge.
+
+开发者接手项目时，应先在干净 checkout 上执行全部 Maintenance check，并完成一次真实 WAV/MP3 smoke test。用户操作流程继续写入 `README.md`，实现契约继续写入 `DevNotes.md`；持久化 schema 与 API 变更必须带版本；所有文件系统修改都应增加使用临时根目录的单元测试；引入租户前还要加入对抗性的授权测试。请保留现有边界：客户端提交 ID 而不是路径，worker 负责合成清理，破坏性界面操作需要明确确认，各平台运行时绝不被静默复用或清除。新增环境变量、端口、volume、secret、迁移顺序、回滚步骤与后台任务归属都应记录，使下一位维护者无需依赖私人知识即可复现部署。
+
+Welcome to fork and add your own function.
+
+欢迎 Fork 本项目并添加你自己的功能。
+
 ## Known constraints and licensing / 已知限制与许可
 
 The bundled installers currently target Windows x64 and Linux x86_64. Only Piper-compatible ONNX voices are supported. The synthesis queue has no position/progress stream, cancellation, or active-worker termination during graceful shutdown. Hugging Face inspection is deliberately non-recursive; generated audio has no retention policy; `/media` supports one byte range per request but not multipart ranges.
 
 内置安装器目前面向 Windows x64 与 Linux x86_64。只支持 Piper 兼容 ONNX 语音。合成队列不提供排位/进度流、取消，也不会在优雅关闭时主动终止正在运行的 worker。Hugging Face 检查有意不递归；生成音频没有保留策略；`/media` 每次请求支持一个字节范围，但不支持 multipart ranges。
 
-Piper is GPL-3.0-or-later. The selected Windows and Linux FFmpeg builds are GPLv3 builds. Model licenses vary by model card. Any redistribution must preserve the applicable notices and satisfy the licenses for bundled binaries and models.
+Original ONNXTTS application source code and documentation use the MIT License recorded in [LICENSE](LICENSE). The standard English MIT text is authoritative; the Chinese text is a convenience translation. Files carrying a different notice remain governed by that notice.
 
-Piper 使用 GPL-3.0-or-later。当前选择的 Windows 与 Linux FFmpeg 均为 GPLv3 构建。模型许可取决于各自模型卡；任何再分发都必须保留适用声明，并满足所捆绑二进制与模型的许可要求。
+ONNXTTS 原创的应用源代码与文档采用 [LICENSE](LICENSE) 中记录的 MIT 许可证。标准英文 MIT 原文具有准据效力，中文内容为方便理解的译文；带有其他许可声明的文件仍以其自身声明为准。
+
+Piper is GPL-3.0-or-later. The selected Windows and Linux FFmpeg builds are GPLv3 builds. Python, ONNX Runtime, model, and model-card licenses remain independent. Any redistribution must preserve the applicable notices and satisfy the licenses for every included binary, package, model, and asset.
+
+Piper 使用 GPL-3.0-or-later。当前选择的 Windows 与 Linux FFmpeg 均为 GPLv3 构建；Python、ONNX Runtime、模型和模型卡的许可证相互独立。任何再分发都必须保留适用声明，并满足每个随附二进制、软件包、模型与资源的许可要求。
 
 The server accepts custom ONNX files up to 1 GB, JSON configurations up to 5 MB, and transcripts up to 50,000 characters. Synthesis uses a bounded first-in, first-out queue with a CPU-sized worker limit. If every worker and waiting slot is occupied, the page reports `Too Many Request, please wait for a while.`; retry after an earlier job finishes.
 

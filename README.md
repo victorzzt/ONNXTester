@@ -164,3 +164,13 @@ Only Piper-compatible ONNX voices are supported. A generic ONNX TTS model may us
 Transcript text is sent only to the local ONNXTTS server. Network access is used for first-run runtime downloads and when you explicitly inspect or download a Hugging Face model.
 
 输入文本只会发送到本机 ONNXTTS 服务。网络访问仅用于首次安装运行时，以及你明确要求检查或下载 Hugging Face 模型时。
+
+## License / 许可证
+
+The original ONNXTTS application source code and documentation are available under the MIT License; see [LICENSE](LICENSE). Piper, FFmpeg, Python, ONNX Runtime, voice models, model cards, and other third-party components retain their own licenses and are not relicensed by the application MIT License.
+
+ONNXTTS 原创的应用源代码与文档采用 MIT 许可证，详见 [LICENSE](LICENSE)。Piper、FFmpeg、Python、ONNX Runtime、语音模型、模型卡和其他第三方组件继续使用各自许可证，不会因应用采用 MIT 而被重新授权。
+
+The English MIT text in `LICENSE` is authoritative; its Chinese translation is provided for convenient understanding.
+
+`LICENSE` 中的英文 MIT 原文具有准据效力，中文译文仅为方便理解而提供。

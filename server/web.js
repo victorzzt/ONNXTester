@@ -176,14 +176,21 @@ export function createWebServer({
         return sendJson(response, 201, { model: model ? toPublicModel(model) : null });
       }
 
-      // Recording sidecars provide list/load/delete without exposing disk paths.
+      // Recording routes exchange ids and derived URLs only; filesystem paths
+      // remain inside the injected service. The collection GET returns compact
+      // summaries so opening a large library does not transfer every full script
+      // and timestamp array.
       if (request.method === "GET" && url.pathname === "/api/recordings") {
         return sendJson(response, 200, { recordings: await listRecordings() });
       }
+      // URL decoding happens here, but the recording service still applies its
+      // strict basename validation before constructing a path.
       if (request.method === "GET" && url.pathname.startsWith("/api/recordings/")) {
         const id = decodeURIComponent(url.pathname.slice("/api/recordings/".length));
         return sendJson(response, 200, await getRecording(id));
       }
+      // The body is either {ids:[...]} or {all:true}; clients never submit file
+      // extensions or paths, keeping deletion semantics format-independent.
       if (request.method === "DELETE" && url.pathname === "/api/recordings") {
         return sendJson(response, 200, await deleteRecordings(await readJson(request)));
       }

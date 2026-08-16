@@ -439,6 +439,9 @@ const onnxRuntime = createOnnxRuntime({
   scanModels,
   toPublicModel: publicModel,
 });
+// Keep persistence behind its own root-scoped service. The HTTP adapter receives
+// capabilities rather than AUDIO_ROOT-aware deletion logic, which prevents route
+// handlers from assembling filesystem paths from request data.
 const recordingLibrary = createRecordingLibrary({ audioRoot: AUDIO_ROOT });
 
 const server = createWebServer({

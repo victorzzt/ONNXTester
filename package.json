@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "A dependency-free local web studio for Piper-compatible ONNX voices.",
+  "license": "MIT",
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test"
