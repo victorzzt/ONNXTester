@@ -1,7 +1,7 @@
 /** Execute one synthesis job outside the HTTP server's main event loop. */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { writeFile, rm } from "node:fs/promises";
+import { writeFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { parentPort, workerData } from "node:worker_threads";
 
@@ -62,6 +62,8 @@ async function renderAudio() {
   const sentencesPath = path.join(tempRoot, `${jobId}.sentences.json`);
   const wavPath = path.join(audioRoot, `${jobId}.wav`);
   const finalPath = path.join(audioRoot, `${jobId}.${job.format}`);
+  const metadataPath = path.join(audioRoot, `${jobId}.json`);
+  const metadataTempPath = path.join(tempRoot, `${jobId}.metadata.json`);
   await Promise.all([
     writeFile(transcriptPath, job.text, "utf8"),
     writeFile(sentencesPath, JSON.stringify(job.sentences), "utf8"),
@@ -99,6 +101,25 @@ async function renderAudio() {
     }
 
     const fileName = path.basename(finalPath);
+    const metadata = {
+      schemaVersion: 1,
+      id: jobId,
+      createdAt: new Date().toISOString(),
+      text: job.text,
+      sentences: Array.isArray(details.sentences) ? details.sentences : [],
+      model: job.model,
+      audio: {
+        fileName,
+        format: job.format,
+        duration: details.duration,
+        sampleRate: details.sampleRate,
+        channels: details.channels,
+        bitsPerSample: details.bitsPerSample,
+      },
+    };
+    await writeFile(metadataTempPath, JSON.stringify(metadata, null, 2), "utf8");
+    await rename(metadataTempPath, metadataPath);
+
     return {
       id: jobId,
       format: job.format,
@@ -110,11 +131,13 @@ async function renderAudio() {
   } catch (error) {
     await rm(wavPath, { force: true });
     if (job.format === "mp3") await rm(finalPath, { force: true });
+    await rm(metadataPath, { force: true });
     throw error;
   } finally {
     await Promise.all([
       rm(transcriptPath, { force: true }),
       rm(sentencesPath, { force: true }),
+      rm(metadataTempPath, { force: true }),
     ]);
   }
 }

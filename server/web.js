@@ -134,6 +134,9 @@ export function createWebServer({
     installModel,
     uploadCustomModel,
     generateAudio,
+    listRecordings,
+    getRecording,
+    deleteRecordings,
   } = services;
 
   async function handleRequest(request, response) {
@@ -171,6 +174,18 @@ export function createWebServer({
         const models = await scanModels();
         const model = models.find((item) => path.resolve(item._path).toLowerCase() === path.resolve(uploaded.modelPath).toLowerCase());
         return sendJson(response, 201, { model: model ? toPublicModel(model) : null });
+      }
+
+      // Recording sidecars provide list/load/delete without exposing disk paths.
+      if (request.method === "GET" && url.pathname === "/api/recordings") {
+        return sendJson(response, 200, { recordings: await listRecordings() });
+      }
+      if (request.method === "GET" && url.pathname.startsWith("/api/recordings/")) {
+        const id = decodeURIComponent(url.pathname.slice("/api/recordings/".length));
+        return sendJson(response, 200, await getRecording(id));
+      }
+      if (request.method === "DELETE" && url.pathname === "/api/recordings") {
+        return sendJson(response, 200, await deleteRecordings(await readJson(request)));
       }
 
       // Synthesis is delegated to the isolated ONNX runtime module.

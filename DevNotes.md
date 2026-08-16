@@ -21,6 +21,7 @@ The normal request path is browser → Node HTTP validation and bounded FIFO que
 | `server/onnx-runtime.js` | Runtime selection, request preparation, CPU sizing, and worker dispatch / 运行时选择、任务准备、CPU 并发推断与 worker 派发 |
 | `server/bounded-fifo-queue.js` | Generic bounded FIFO scheduling and overload errors / 通用有界 FIFO 调度与过载错误 |
 | `server/synthesis-worker.js` | One-job Python/FFmpeg process orchestration and cleanup / 单任务 Python/FFmpeg 进程编排与清理 |
+| `server/recording-library.js` | Sidecar validation, recording summaries, retrieval, and exact UUID deletion / sidecar 验证、录音摘要、读取与精确 UUID 删除 |
 | `tools/synthesize_piper.py` | Sentence synthesis bridge and PCM timing metadata / 分句合成桥接与 PCM 时间元数据 |
 | `tools/set_local_env.ps1` | Windows runtime installer and verifier / Windows 运行时安装与验证 |
 | `set_local_env.sh` | Linux x86_64 runtime installer and verifier / Linux x86_64 运行时安装与验证 |
@@ -104,6 +105,20 @@ Python 桥接脚本会验证匹配的 `.onnx.json`，只加载一次所选 Piper
 
 `BoundedFifoQueue` 最多并行启动按 CPU 推断的任务数，默认不超过四个，并维护容量有限的先进先出等待列表。每个运行任务都有新的 Node worker thread、隔离的临时输入、Python 进程以及可选的项目内 FFmpeg 进程。队列满时立即以 HTTP 429 和统一过载提示拒绝。MP3 响应沿用 WAV 计算出的时间戳；编码器延迟只可能带来很小的播放层偏差。
 
+## Recording persistence / 录音持久化
+
+`server/synthesis-worker.js` does not rewrite the final WAV or MP3 for persistence. After synthesis and optional conversion complete, it writes metadata to `data/tmp/{uuid}.metadata.json` and atomically renames that file to `data/audio/{uuid}.json`. A metadata failure removes the corresponding audio, so a successful job never exposes a newly generated audio file without its sidecar. The `finally` path removes temporary transcript, sentence, and metadata files.
+
+`server/synthesis-worker.js` 不会为了持久化而重写最终 WAV 或 MP3。合成与可选格式转换完成后，它先写入 `data/tmp/{uuid}.metadata.json`，再原子重命名为 `data/audio/{uuid}.json`。如果元数据写入失败，对应音频也会删除，因此成功任务不会留下缺少 sidecar 的新音频；`finally` 路径会清理临时文本、分句和元数据文件。
+
+Sidecar schema version 1 stores `id`, `createdAt`, the original `text`, normalized sentence `text`/`start`/`end` entries, the public model object, and audio format/duration/sample-rate/channel/bit-depth fields. Audio and JSON always share the worker-generated UUID basename.
+
+Sidecar schema version 1 保存 `id`、`createdAt`、原始 `text`、规范化后的句子 `text`/`start`/`end`、公开模型对象，以及音频格式、时长、采样率、声道数和位深；音频与 JSON 始终共用 worker 生成的 UUID basename。
+
+`createRecordingLibrary` accepts only bounded UUID-like identifiers, limits sidecars to 2 MB, revalidates text and timings, and derives all public media URLs rather than trusting paths from JSON. Listings are sidecar-driven, so corrupt metadata, orphaned JSON, and pre-sidecar audio are omitted. Selected deletion removes only the exact `.json`, `.wav`, and `.mp3` names for validated identifiers; Clear operates on every valid item returned by the library.
+
+`createRecordingLibrary` 只接受长度受限的 UUID 风格标识符，把 sidecar 限制为 2 MB，并重新验证文本与时间戳；所有公开媒体 URL 都由服务端推导，不信任 JSON 中的路径。列表以 sidecar 为准，因此损坏元数据、孤立 JSON 和 sidecar 功能之前的音频都不会显示。选中删除只会移除已验证标识符对应的精确 `.json`、`.wav` 与 `.mp3` 名称；Clear 作用于录音库返回的全部有效项目。
+
 ## Model handling / 模型处理
 
 Model discovery is rooted at `data/models`; custom uploads use `data/models/custom`. A voice is accepted only when `.onnx` and `.onnx.json` share a basename and the configuration parses successfully. Internal filesystem paths remain private and are removed from API model objects.
@@ -124,6 +139,9 @@ Hugging Face 输入支持 repository、tree、blob 与 resolve URL，但网络�
 | `POST` | `/api/models/download` | Download one selected pair / 下载一组已选择模型 |
 | `POST` | `/api/models/upload` | Upload custom ONNX and JSON / 上传自定义 ONNX 与 JSON |
 | `POST` | `/api/generate` | Generate audio plus sentence `text`/`start`/`end` timings / 生成音频及句子 `text`/`start`/`end` 时间 |
+| `GET` | `/api/recordings` | List validated recording summaries / 列出已验证录音摘要 |
+| `GET` | `/api/recordings/{id}` | Load one script, timing list, and media reference / 读取一份脚本、时间列表与媒体引用 |
+| `DELETE` | `/api/recordings` | Delete selected IDs or every valid recording / 删除选中 ID 或全部有效录音 |
 | `GET` | `/media/{file}` | Inline audio response / 内联音频响应 |
 | `GET` | `/api/download/{file}` | Attachment audio response / 附件音频响应 |
 
@@ -148,6 +166,10 @@ Voice Library 按语言代码分组普通模型，并把自定义上传放在 `c
 The generated sentence buttons are built from the API timing list with text-only DOM operations. Playback uses `requestAnimationFrame` while audio is running and `timeupdate`/`seeked` fallbacks to update `aria-current` and the light highlight. Clicking a button seeks to its recorded start. A portrait-only media rule visually orders the editor before Voice Library without changing desktop DOM order.
 
 生成后的句子按钮只通过文本 DOM 操作从 API 时间列表构建。音频播放时使用 `requestAnimationFrame`，并以 `timeupdate`/`seeked` 为后备来更新 `aria-current` 和浅色高亮；点击按钮会跳到记录的起点。仅竖屏生效的媒体规则会把编辑区排在 Voice Library 前面，不改变桌面的 DOM 顺序。
+
+The Previous recordings dialog fetches summaries only while opening. Display names are derived in the browser without changing UUIDs: Latin, Cyrillic, and Greek text uses the first two `Intl.Segmenter` words, while other scripts use the first 32 grapheme clusters. Four client-side sort modes cover time and title in both directions. A 650 ms pointer hold enables multi-select; Shift-click provides the keyboard/mouse equivalent. Loading fetches one full sidecar, restores only `text` to the editor, restores timing cues to Preview, and intentionally does not autoplay. Destructive confirmation is an in-dialog, non-blocking expansion with inert and `aria-hidden` collapsed state. Selected deletion advances after one explicit Confirm; Clear changes the same bar from Continue to Permanently clear and requires two explicit confirmations. Cancel closes either flow without sending a request; native `window.confirm` is not used.
+
+Previous recordings 对话框只在打开时获取摘要。显示名在浏览器内推导，不改变 UUID：拉丁、西里尔和希腊文字取 `Intl.Segmenter` 的前两个单词，其他文字取前 32 个 grapheme cluster。四种客户端排序同时覆盖时间和标题的正倒序。按住指针 650 ms 会启用多选，Shift-click 提供键盘/鼠标等价操作。Load 只读取一份完整 sidecar，把 `text` 放回编辑器，把时间点放回 Preview，并且有意不自动播放。破坏性确认采用对话框内部的非阻塞展开条，折叠状态使用 inert 与 `aria-hidden`。选中删除需要一次明确 Confirm；Clear 会让同一个确认条从 Continue 切换到 Permanently clear，并要求两次明确确认。Cancel 会直接关闭流程且不发送请求，不再使用原生 `window.confirm`。
 
 ## Overrides and startup / 覆盖变量与启动
 
@@ -193,6 +215,8 @@ node --check server.mjs
 node --check server\web.js
 node --check server\onnx-runtime.js
 node --check server\bounded-fifo-queue.js
+node --check server\recording-library.js
+node --test server\recording-library.test.js
 node --check server\synthesis-worker.js
 node --check public\app.js
 node --check public\theme.js
@@ -213,15 +237,17 @@ node --check server.mjs
 node --check server/web.js
 node --check server/onnx-runtime.js
 node --check server/bounded-fifo-queue.js
+node --check server/recording-library.js
+node --test server/recording-library.test.js
 node --check server/synthesis-worker.js
 node --check tools/download_runtime_asset.mjs
 node tools/debug_synthesis_queue.mjs
 .local-env/python/bin/python3 -I -m py_compile tools/synthesize_piper.py
 ```
 
-An end-to-end smoke test should start on a non-default port, inspect `runtime.queue` from `/api/health`, check `/api/models`, generate a multi-sentence WAV and MP3, verify monotonic timings, validate MP3 with project-local FFprobe, and stop the server cleanly. Browser QA should cover portrait ordering, sentence highlighting and seeking, the queue-full debug mode, desktop/mobile widths, dialogs, theme restoration, and console errors.
+An end-to-end smoke test should start on a non-default port, inspect `runtime.queue` from `/api/health`, check `/api/models`, generate a multi-sentence WAV and MP3, verify each same-basename sidecar and monotonic timings, validate MP3 with project-local FFprobe, and stop the server cleanly. Browser QA should cover portrait ordering, sentence highlighting and seeking, the recording list/sort/load/long-press flow, both destructive confirmation counts, the queue-full debug mode, desktop/mobile widths, dialogs, theme restoration, and console errors.
 
-端到端烟雾测试应使用非默认端口启动，从 `/api/health` 检查 `runtime.queue`，检查 `/api/models`，真实生成多句 WAV 和 MP3，验证时间戳单调递增，再用项目内 FFprobe 校验 MP3，并正常停止服务。浏览器 QA 应覆盖竖屏顺序、句子高亮与跳转、满队列调试模式、桌面/移动宽度、对话框、主题恢复和控制台错误。
+端到端烟雾测试应使用非默认端口启动，从 `/api/health` 检查 `runtime.queue`，检查 `/api/models`，真实生成多句 WAV 和 MP3，验证每份同名 sidecar 和时间戳单调递增，再用项目内 FFprobe 校验 MP3，并正常停止服务。浏览器 QA 应覆盖竖屏顺序、句子高亮与跳转、录音列表、排序、加载与长按流程、两类破坏性操作的确认次数、满队列调试模式、桌面/移动宽度、对话框、主题恢复和控制台错误。
 
 ## Known constraints and licensing / 已知限制与许可
 

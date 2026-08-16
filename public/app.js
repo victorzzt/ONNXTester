@@ -18,6 +18,13 @@ const QUEUE_DEBUG_MODEL = Object.freeze({
   numSpeakers: 1,
   speakers: {},
 });
+const RECORDING_SORTS = Object.freeze([
+  { id: "time-desc", label: "Newest" },
+  { id: "time-asc", label: "Oldest" },
+  { id: "title-asc", label: "A–Z" },
+  { id: "title-desc", label: "Z–A" },
+]);
+const RECORDING_LONG_PRESS_MS = 650;
 
 /** Returns a sanitized, bounded recent-voice list from browser storage. */
 function storedRecentIds() {
@@ -37,12 +44,31 @@ const state = {
   recentIds: storedRecentIds(),
   sentences: [],
   activeSentence: -1,
+  recordings: [],
+  recordingSort: "time-desc",
+  recordingSelectedIds: new Set(),
+  recordingMulti: false,
 };
 
 // Cache stable DOM references once after index.html has finished parsing.
 const elements = {
   themeToggle: $("#themeToggle"),
   openInfo: $("#openInfo"),
+  openRecordings: $("#openRecordings"),
+  recordingsDialog: $("#recordingsDialog"),
+  closeRecordings: $("#closeRecordings"),
+  recordingSort: $("#recordingSort"),
+  cancelRecordingSelection: $("#cancelRecordingSelection"),
+  clearRecordings: $("#clearRecordings"),
+  recordingStatus: $("#recordingStatus"),
+  recordingList: $("#recordingList"),
+  recordingSelectionSummary: $("#recordingSelectionSummary"),
+  deleteRecordings: $("#deleteRecordings"),
+  loadRecording: $("#loadRecording"),
+  recordingConfirmation: $("#recordingConfirmation"),
+  recordingConfirmationMessage: $("#recordingConfirmationMessage"),
+  cancelRecordingConfirmation: $("#cancelRecordingConfirmation"),
+  confirmRecordingAction: $("#confirmRecordingAction"),
   infoDialog: $("#infoDialog"),
   voiceList: $("#voiceList"),
   transcript: $("#transcript"),
@@ -451,6 +477,7 @@ async function generate() {
         speakerId: elements.speakerField.hidden ? null : elements.speaker.value,
       }),
     });
+    delete elements.result.dataset.recordingId;
     elements.audio.src = data.mediaUrl;
     elements.download.href = data.downloadUrl;
     elements.resultTitle.textContent = `${model.name} preview`;
@@ -468,6 +495,343 @@ async function generate() {
     elements.generate.querySelector(".button-icon").textContent = "▶";
     elements.generate.querySelector(".button-label").textContent = "Generate preview";
   }
+}
+
+// The recording library derives human labels from saved script text while UUID
+// basenames remain the only storage identifiers used by the API.
+function recordingTitle(value) {
+  const text = String(value || "").replace(/\s+/gu, " ").trim();
+  if (!text) return "Untitled recording";
+
+  const alphabeticScript = /[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}]/u.test(text);
+  if (!alphabeticScript) {
+    const graphemes = typeof Intl.Segmenter === "function"
+      ? Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text), ({ segment }) => segment)
+      : Array.from(text);
+    return graphemes.slice(0, 32).join("");
+  }
+
+  if (typeof Intl.Segmenter === "function") {
+    const words = Array.from(new Intl.Segmenter(undefined, { granularity: "word" }).segment(text))
+      .filter((part) => part.isWordLike)
+      .slice(0, 2)
+      .map((part) => part.segment);
+    if (words.length) return words.join(" ");
+  }
+  return text.split(/\s+/u).slice(0, 2).join(" ");
+}
+
+function recordingDate(value) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "Unknown time";
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+function recordingMeta(recording) {
+  const duration = Number(recording.duration);
+  const durationLabel = Number.isFinite(duration) ? formatCueTime(duration) : null;
+  return [recordingDate(recording.createdAt), durationLabel, String(recording.format || "wav").toUpperCase()]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function sortedRecordings() {
+  const recordings = [...state.recordings];
+  if (state.recordingSort.startsWith("title")) {
+    const direction = state.recordingSort.endsWith("asc") ? 1 : -1;
+    return recordings.sort((left, right) => direction * recordingTitle(left.textPreview)
+      .localeCompare(recordingTitle(right.textPreview), undefined, { sensitivity: "base", numeric: true }));
+  }
+  const direction = state.recordingSort.endsWith("asc") ? 1 : -1;
+  return recordings.sort((left, right) => direction * ((Date.parse(left.createdAt) || 0) - (Date.parse(right.createdAt) || 0)));
+}
+
+function setRecordingStatus(message, error = false) {
+  elements.recordingStatus.textContent = message;
+  elements.recordingStatus.classList.toggle("error", error);
+}
+
+function syncRecordingControls() {
+  const selectedCount = state.recordingSelectedIds.size;
+  const sort = RECORDING_SORTS.find((item) => item.id === state.recordingSort) || RECORDING_SORTS[0];
+  elements.recordingSort.textContent = `Sort: ${sort.label}`;
+  elements.cancelRecordingSelection.hidden = !state.recordingMulti;
+  elements.deleteRecordings.hidden = !state.recordingMulti;
+  elements.deleteRecordings.disabled = selectedCount === 0;
+  elements.loadRecording.disabled = state.recordingMulti || selectedCount !== 1;
+  elements.clearRecordings.disabled = state.recordings.length === 0;
+  elements.recordingList.classList.toggle("multi-select", state.recordingMulti);
+
+  if (state.recordingMulti) {
+    elements.recordingSelectionSummary.textContent = `${selectedCount} selected for deletion.`;
+  } else if (selectedCount === 1) {
+    elements.recordingSelectionSummary.textContent = "Ready to load the selected recording.";
+  } else {
+    elements.recordingSelectionSummary.textContent = "Select one recording to load.";
+  }
+}
+
+let recordingPressTimer = null;
+let suppressRecordingClickId = null;
+let pendingRecordingConfirmation = null;
+
+function cancelRecordingPress(card, id) {
+  if (recordingPressTimer != null) window.clearTimeout(recordingPressTimer);
+  recordingPressTimer = null;
+  card.classList.remove("pressing");
+  if (suppressRecordingClickId === id) {
+    window.setTimeout(() => {
+      if (suppressRecordingClickId === id) suppressRecordingClickId = null;
+    }, 0);
+  }
+}
+
+function beginRecordingPress(event, card, recording) {
+  if (event.button !== 0) return;
+  if (recordingPressTimer != null) window.clearTimeout(recordingPressTimer);
+  card.classList.add("pressing");
+  card.setPointerCapture?.(event.pointerId);
+  recordingPressTimer = window.setTimeout(() => {
+    recordingPressTimer = null;
+    suppressRecordingClickId = recording.id;
+    closeRecordingConfirmation();
+    state.recordingMulti = true;
+    state.recordingSelectedIds.add(recording.id);
+    card.classList.add("selected");
+    card.classList.remove("pressing");
+    card.setAttribute("aria-pressed", "true");
+    syncRecordingControls();
+  }, RECORDING_LONG_PRESS_MS);
+}
+
+function chooseRecording(recording, multi = false) {
+  closeRecordingConfirmation();
+  if (state.recordingMulti || multi) {
+    state.recordingMulti = true;
+    if (state.recordingSelectedIds.has(recording.id)) state.recordingSelectedIds.delete(recording.id);
+    else state.recordingSelectedIds.add(recording.id);
+  } else {
+    state.recordingSelectedIds = new Set([recording.id]);
+  }
+  renderRecordings();
+}
+
+function createRecordingCard(recording) {
+  const card = document.createElement("button");
+  card.type = "button";
+  card.className = `recording-card${state.recordingSelectedIds.has(recording.id) ? " selected" : ""}`;
+  card.dataset.id = recording.id;
+  card.setAttribute("aria-pressed", String(state.recordingSelectedIds.has(recording.id)));
+
+  const check = document.createElement("span");
+  check.className = "recording-check";
+  check.setAttribute("aria-hidden", "true");
+  const copy = document.createElement("span");
+  copy.className = "recording-copy";
+  const title = document.createElement("b");
+  title.textContent = recordingTitle(recording.textPreview);
+  const detail = document.createElement("span");
+  detail.textContent = recordingMeta(recording);
+  copy.append(title, detail);
+  const badge = document.createElement("span");
+  badge.className = "recording-badge";
+  badge.textContent = recording.format || "wav";
+  card.append(check, copy, badge);
+
+  card.addEventListener("pointerdown", (event) => beginRecordingPress(event, card, recording));
+  card.addEventListener("pointerup", () => cancelRecordingPress(card, recording.id));
+  card.addEventListener("pointercancel", () => cancelRecordingPress(card, recording.id));
+  card.addEventListener("lostpointercapture", () => cancelRecordingPress(card, recording.id));
+  card.addEventListener("contextmenu", (event) => event.preventDefault());
+  card.addEventListener("click", (event) => {
+    if (suppressRecordingClickId === recording.id) {
+      suppressRecordingClickId = null;
+      event.preventDefault();
+      return;
+    }
+    chooseRecording(recording, event.shiftKey);
+  });
+  return card;
+}
+
+function renderRecordings() {
+  elements.recordingList.replaceChildren();
+  const recordings = sortedRecordings();
+  if (!recordings.length) {
+    const empty = document.createElement("p");
+    empty.className = "recording-empty";
+    empty.textContent = "No saved recordings yet.";
+    elements.recordingList.append(empty);
+  } else {
+    const fragment = document.createDocumentFragment();
+    for (const recording of recordings) fragment.append(createRecordingCard(recording));
+    elements.recordingList.append(fragment);
+  }
+  syncRecordingControls();
+}
+
+async function refreshRecordings() {
+  const data = await request("/api/recordings");
+  state.recordings = Array.isArray(data.recordings) ? data.recordings : [];
+  const available = new Set(state.recordings.map((recording) => recording.id));
+  state.recordingSelectedIds = new Set([...state.recordingSelectedIds].filter((id) => available.has(id)));
+  renderRecordings();
+  const count = state.recordings.length;
+  setRecordingStatus(`${count.toLocaleString()} saved recording${count === 1 ? "" : "s"}.`);
+}
+
+async function openRecordingsDialog() {
+  closeRecordingConfirmation();
+  state.recordingMulti = false;
+  state.recordingSelectedIds.clear();
+  renderRecordings();
+  setRecordingStatus("Loading saved recordings…");
+  if (!elements.recordingsDialog.open) elements.recordingsDialog.showModal();
+  try {
+    await refreshRecordings();
+  } catch (error) {
+    state.recordings = [];
+    renderRecordings();
+    setRecordingStatus(error.message, true);
+  }
+}
+
+function clearLoadedRecordingIfDeleted(ids) {
+  const loadedId = elements.result.dataset.recordingId;
+  if (!loadedId || !ids.includes(loadedId)) return;
+  stopPlaybackTracking(true);
+  elements.audio.pause();
+  elements.audio.removeAttribute("src");
+  elements.audio.load();
+  elements.download.removeAttribute("href");
+  elements.result.hidden = true;
+  delete elements.result.dataset.recordingId;
+  resetSentenceTimeline();
+}
+
+async function loadSelectedRecording() {
+  if (state.recordingMulti || state.recordingSelectedIds.size !== 1) return;
+  closeRecordingConfirmation();
+  const id = [...state.recordingSelectedIds][0];
+  elements.loadRecording.disabled = true;
+  setRecordingStatus("Loading the selected recording…");
+  try {
+    const recording = await request(`/api/recordings/${encodeURIComponent(id)}`);
+    stopPlaybackTracking(true);
+    elements.audio.pause();
+    elements.transcript.value = recording.text;
+    elements.transcript.dispatchEvent(new Event("input"));
+    elements.audio.src = recording.mediaUrl;
+    elements.download.href = recording.downloadUrl;
+    elements.result.dataset.recordingId = recording.id;
+    elements.resultTitle.textContent = `${recordingTitle(recording.text)} · saved recording`;
+    elements.resultMeta.textContent = `${recording.duration != null ? `${Number(recording.duration).toFixed(1)} sec · ` : ""}${String(recording.format).toUpperCase()} · ${recording.sampleRate ? `${(recording.sampleRate / 1000).toFixed(1)} kHz` : "saved render"}`;
+    renderSentenceTimeline(recording.sentences);
+    elements.result.hidden = false;
+    setStatus("Saved recording loaded. Press play when you are ready.");
+    elements.recordingsDialog.close();
+  } catch (error) {
+    setRecordingStatus(error.message, true);
+  } finally {
+    syncRecordingControls();
+  }
+}
+
+async function deleteRecordingIds(ids, all = false) {
+  const data = await request("/api/recordings", {
+    method: "DELETE",
+    body: JSON.stringify(all ? { all: true } : { ids }),
+  });
+  const deleted = Array.isArray(data.deleted) ? data.deleted : [];
+  clearLoadedRecordingIfDeleted(deleted);
+  state.recordingSelectedIds.clear();
+  state.recordingMulti = false;
+  await refreshRecordings();
+  setRecordingStatus(`${deleted.length.toLocaleString()} recording${deleted.length === 1 ? "" : "s"} deleted.`);
+}
+
+function renderRecordingConfirmation() {
+  const pending = pendingRecordingConfirmation;
+  if (!pending) return;
+  if (pending.kind === "delete") {
+    const count = pending.ids.length;
+    elements.recordingConfirmationMessage.textContent = `Delete ${count} selected recording${count === 1 ? "" : "s"}? This cannot be undone.`;
+    elements.confirmRecordingAction.textContent = "Delete selected";
+  } else if (pending.stage === 1) {
+    const count = state.recordings.length;
+    elements.recordingConfirmationMessage.textContent = `Clear all ${count} saved recording${count === 1 ? "" : "s"}? You will be asked once more.`;
+    elements.confirmRecordingAction.textContent = "Continue";
+  } else {
+    elements.recordingConfirmationMessage.textContent = "Confirm again: permanently delete every saved recording and its metadata?";
+    elements.confirmRecordingAction.textContent = "Permanently clear";
+  }
+}
+
+function openRecordingConfirmation(pending) {
+  pendingRecordingConfirmation = pending;
+  renderRecordingConfirmation();
+  elements.recordingConfirmation.classList.add("open");
+  elements.recordingConfirmation.setAttribute("aria-hidden", "false");
+  elements.recordingConfirmation.inert = false;
+  elements.cancelRecordingConfirmation.tabIndex = 0;
+  elements.confirmRecordingAction.tabIndex = 0;
+  window.requestAnimationFrame(() => elements.cancelRecordingConfirmation.focus());
+}
+
+function closeRecordingConfirmation(restoreFocus = false) {
+  const trigger = pendingRecordingConfirmation?.kind === "clear" ? elements.clearRecordings : elements.deleteRecordings;
+  pendingRecordingConfirmation = null;
+  elements.recordingConfirmation.classList.remove("open");
+  elements.recordingConfirmation.setAttribute("aria-hidden", "true");
+  elements.recordingConfirmation.inert = true;
+  elements.cancelRecordingConfirmation.tabIndex = -1;
+  elements.confirmRecordingAction.tabIndex = -1;
+  if (restoreFocus && !trigger.hidden && !trigger.disabled) trigger.focus();
+}
+
+function deleteSelectedRecordings() {
+  const ids = [...state.recordingSelectedIds];
+  if (!ids.length) return;
+  openRecordingConfirmation({ kind: "delete", ids });
+}
+
+function clearAllRecordings() {
+  if (!state.recordings.length) return;
+  openRecordingConfirmation({ kind: "clear", stage: 1 });
+}
+
+async function confirmPendingRecordingAction() {
+  const pending = pendingRecordingConfirmation;
+  if (!pending) return;
+  if (pending.kind === "clear" && pending.stage === 1) {
+    pending.stage = 2;
+    renderRecordingConfirmation();
+    elements.confirmRecordingAction.focus();
+    return;
+  }
+
+  closeRecordingConfirmation();
+  if (pending.kind === "delete") elements.deleteRecordings.disabled = true;
+  else elements.clearRecordings.disabled = true;
+  try {
+    await deleteRecordingIds(pending.kind === "delete" ? pending.ids : [], pending.kind === "clear");
+  } catch (error) {
+    setRecordingStatus(error.message, true);
+    syncRecordingControls();
+  }
+}
+
+function cycleRecordingSort() {
+  const index = RECORDING_SORTS.findIndex((item) => item.id === state.recordingSort);
+  state.recordingSort = RECORDING_SORTS[(index + 1) % RECORDING_SORTS.length].id;
+  renderRecordings();
+}
+
+function cancelRecordingSelection() {
+  closeRecordingConfirmation();
+  state.recordingMulti = false;
+  state.recordingSelectedIds.clear();
+  renderRecordings();
 }
 
 /** Inspects and installs one unambiguous Hugging Face voice-model pair.
@@ -571,6 +935,19 @@ elements.pause.addEventListener("input", () => { elements.pauseValue.textContent
 elements.generate.addEventListener("click", generate);
 elements.sentenceTimeline.addEventListener("click", seekToSentence);
 elements.audio.addEventListener("play", startPlaybackTracking);
+elements.openRecordings.addEventListener("click", openRecordingsDialog);
+elements.closeRecordings.addEventListener("click", () => elements.recordingsDialog.close());
+elements.recordingSort.addEventListener("click", cycleRecordingSort);
+elements.cancelRecordingSelection.addEventListener("click", cancelRecordingSelection);
+elements.clearRecordings.addEventListener("click", clearAllRecordings);
+elements.deleteRecordings.addEventListener("click", deleteSelectedRecordings);
+elements.loadRecording.addEventListener("click", loadSelectedRecording);
+elements.cancelRecordingConfirmation.addEventListener("click", () => closeRecordingConfirmation(true));
+elements.confirmRecordingAction.addEventListener("click", confirmPendingRecordingAction);
+elements.recordingsDialog.addEventListener("close", () => {
+  if (recordingPressTimer != null) window.clearTimeout(recordingPressTimer);
+  closeRecordingConfirmation();
+});
 elements.audio.addEventListener("pause", () => stopPlaybackTracking());
 elements.audio.addEventListener("ended", () => stopPlaybackTracking(true));
 elements.audio.addEventListener("timeupdate", updateSentenceHighlight);

@@ -102,15 +102,27 @@ Use the theme toggle in the upper-right corner for Light or Dark mode. Recently 
 
 右上角的主题开关可以切换 Light/Dark 模式。最近使用的语音会显示在 Recent 中，这项记录只保存在浏览器 LocalStorage。
 
+The folder button immediately to the left of the Light/Dark switch opens Previous recordings. Alphabetic scripts are labeled with their first one or two words; scripts that do not use spelled-out words are shown with up to their first 32 characters. The Sort button cycles through newest, oldest, A–Z, and Z–A. Select one item and choose Load to restore its script to the text box and its audio and sentence cues to Preview; loading does not start playback automatically.
+
+Light/Dark 开关左边的文件夹按钮会打开 Previous recordings。拼写型文字以开头一到两个单词作为标题；不使用拼写单词的文字最多显示开头 32 个字符。Sort 按钮依次切换最新、最早、首字母正序和首字母倒序。选中一条记录并点击 Load，会把纯脚本文字放回文本框，并把音频与句子时间点放入 Preview；加载后不会自动播放。
+
+Long-press any row to enter multi-select mode, then tap more rows as needed. Delete selected asks for confirmation once. Clear removes every recording managed by the library and deliberately asks for confirmation twice. Confirmations appear in a non-blocking bar that expands below the recording actions; every step also provides Cancel.
+
+长按任一记录可进入多选模式，随后可以继续点选其他记录。Delete selected 会确认一次；Clear 会删除录音库管理的全部记录，并有意要求连续确认两次。确认过程会在录音操作区下方向下展开，不使用阻塞式 Alert，并且每一步都可以 Cancel。
+
 ## Files and storage / 文件与存储
 
 Downloaded voices are stored in `data/models`, custom uploads in `data/models/custom`, and generated audio in `data/audio`. Temporary transfer and transcript files use `data/tmp`.
 
 下载的语音保存在 `data/models`，自定义上传保存在 `data/models/custom`，生成音频保存在 `data/audio`；传输与文本临时文件使用 `data/tmp`。
 
-The application does not automatically delete generated audio. Remove old files from `data/audio` yourself when you no longer need them.
+Each successful generation keeps the WAV or MP3 bytes unchanged and writes a same-basename JSON sidecar containing the original script and sentence timestamps. Both files retain the UUID basename. Recordings created before sidecars were introduced cannot be reconstructed and therefore do not appear in Previous recordings.
 
-应用不会自动删除已生成音频；不再需要时，请自行清理 `data/audio` 中的旧文件。
+每次成功生成都会保持 WAV 或 MP3 音频内容不变，并写入一个同名 JSON sidecar，保存原始脚本与句子时间戳；两者都保留 UUID 文件名。在 sidecar 功能加入前生成的旧音频无法补回脚本，因此不会显示在 Previous recordings 中。
+
+Audio remains on disk until you use Delete selected or Clear in Previous recordings, or remove it manually. Library deletion removes the selected UUID audio and JSON together.
+
+音频会一直保留在磁盘中，直到你在 Previous recordings 中使用 Delete selected 或 Clear，或手动删除。录音库删除操作会同时移除选中 UUID 对应的音频与 JSON。
 
 ## Optional settings / 可选设置
 

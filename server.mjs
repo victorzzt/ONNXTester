@@ -12,6 +12,7 @@ import { Readable } from "node:stream";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createOnnxRuntime } from "./server/onnx-runtime.js";
+import { createRecordingLibrary } from "./server/recording-library.js";
 import { createWebServer } from "./server/web.js";
 
 // Resolve every project path from this module, never from the caller's CWD.
@@ -438,6 +439,7 @@ const onnxRuntime = createOnnxRuntime({
   scanModels,
   toPublicModel: publicModel,
 });
+const recordingLibrary = createRecordingLibrary({ audioRoot: AUDIO_ROOT });
 
 const server = createWebServer({
   host: HOST,
@@ -453,6 +455,9 @@ const server = createWebServer({
     installModel,
     uploadCustomModel,
     generateAudio: onnxRuntime.generateAudio,
+    listRecordings: recordingLibrary.listRecordings,
+    getRecording: recordingLibrary.getRecording,
+    deleteRecordings: recordingLibrary.deleteRecordings,
   },
 });
 server.listen(PORT, HOST, () => {

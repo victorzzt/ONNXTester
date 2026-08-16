@@ -129,6 +129,8 @@ button { color: inherit; }
 .brand-mark i:nth-child(4) { height: 16px; }
 .help-button { width: 29px; height: 29px; padding: 0; border: 1px solid var(--control-border); border-radius: 50%; color: var(--text-muted); background: var(--surface-solid); cursor: pointer; font-size: 15px; font-weight: 800; line-height: 27px; text-align: center; transition: color 160ms ease, background 160ms ease, transform 160ms ease; }
 .help-button:hover { color: var(--text); background: var(--accent-soft); transform: translateY(-1px); }
+.recordings-button { display: grid; place-items: center; line-height: normal; }
+.recordings-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
 
 .topbar-actions { display: flex; align-items: center; gap: 14px; }
 .theme-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 34px; padding: 4px 7px 4px 10px; border: 1px solid var(--control-border); border-radius: 999px; color: var(--text-muted); background: var(--surface-solid); cursor: pointer; }
@@ -289,6 +291,38 @@ summary { color: var(--text-muted); cursor: pointer; font-size: 11px; font-weigh
 .upload-actions > span { color: var(--text-subtle); font-size: 10px; }
 .license-note { margin: 18px 0 0; color: var(--text-subtle); font-size: 10px; text-align: center; }
 
+/* Persistent recording library, sorting, selection, and destructive actions. */
+.recordings-dialog { width: min(720px, calc(100% - 32px)); max-height: calc(100dvh - 32px); overflow: auto; }
+.recordings-shell { min-height: 480px; }
+.recordings-controls { display: flex; align-items: center; gap: 8px; margin-top: 20px; }
+.recording-control-button { padding: 8px 11px; border: 1px solid var(--control-border); border-radius: 8px; color: var(--text-muted); background: var(--surface-muted); cursor: pointer; font-size: 10px; font-weight: 800; }
+.recording-control-button:hover { color: var(--text); background: var(--accent-soft); }
+.danger-control { margin-left: auto; color: var(--danger); }
+.recording-status { min-height: 20px; margin: 12px 0 8px; color: var(--text-subtle); font-size: 11px; }
+.recording-status.error { color: var(--danger); }
+.recording-list { display: grid; align-content: start; gap: 7px; min-height: 180px; max-height: 360px; padding: 5px; overflow-y: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-muted); }
+.recording-empty { margin: auto; padding: 36px 16px; color: var(--text-subtle); font-size: 12px; text-align: center; }
+.recording-card { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 11px; width: 100%; padding: 11px 12px; border: 1px solid transparent; border-radius: 9px; color: var(--text); background: var(--surface-solid); cursor: pointer; text-align: left; touch-action: manipulation; user-select: none; transition: border-color 130ms ease, background 130ms ease, transform 130ms ease; }
+.recording-card:hover { border-color: var(--control-border); }
+.recording-card.pressing { transform: scale(.99); }
+.recording-card.selected { border-color: var(--accent); background: var(--accent-soft); }
+.recording-check { width: 16px; height: 16px; border: 1px solid var(--control-border); border-radius: 50%; background: var(--surface-muted); box-shadow: inset 0 0 0 3px var(--surface-solid); }
+.recording-card.selected .recording-check { border-color: var(--accent); background: var(--accent); }
+.recording-copy { min-width: 0; }
+.recording-copy b, .recording-copy span { display: block; }
+.recording-copy b { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.recording-copy span { margin-top: 4px; color: var(--text-subtle); font-size: 10px; }
+.recording-badge { padding: 4px 7px; border-radius: 999px; color: var(--text-muted); background: var(--surface-muted); font-size: 9px; font-weight: 800; text-transform: uppercase; }
+.recording-actions > span { color: var(--text-subtle); font-size: 10px; }
+.recording-action-buttons { display: flex; gap: 8px; }
+.danger-button { padding: 10px 13px; border: 1px solid var(--danger); border-radius: 9px; color: var(--danger); background: transparent; cursor: pointer; font-size: 10px; font-weight: 800; }
+:is(.recording-control-button, .danger-button, .recording-actions .primary-button):disabled { cursor: not-allowed; opacity: .45; }
+.recording-confirmation { max-height: 0; margin-top: 0; overflow: hidden; opacity: 0; transform: translateY(-6px); transition: max-height 180ms ease, margin-top 180ms ease, opacity 150ms ease, transform 180ms ease; }
+.recording-confirmation.open { max-height: 140px; margin-top: 12px; opacity: 1; transform: translateY(0); }
+.recording-confirmation-content { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px; border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line)); border-radius: 10px; background: color-mix(in srgb, var(--danger) 7%, var(--surface-solid)); }
+.recording-confirmation-content p { margin: 0; color: var(--text); font-size: 11px; line-height: 1.5; }
+.recording-confirmation-buttons { display: flex; flex: 0 0 auto; gap: 8px; }
+
 /* Collapse the studio to one column on tablets and narrow windows. */
 @media (max-width: 860px) {
   .studio-grid { grid-template-columns: 1fr; }
@@ -331,4 +365,12 @@ summary { color: var(--text-muted); cursor: pointer; font-size: 11px; font-weigh
   .primary-button { width: 100%; }
   .result-copy { align-self: flex-start; }
   footer { display: flex; }
+  .recordings-dialog { width: calc(100% - 16px); max-height: calc(100dvh - 16px); }
+  .recordings-shell { min-height: 0; padding: 20px; }
+  .recordings-controls { flex-wrap: wrap; }
+  .danger-control { margin-left: 0; }
+  .recording-action-buttons { width: 100%; }
+  .recording-confirmation.open { max-height: 220px; }
+  .recording-confirmation-content { align-items: stretch; flex-direction: column; }
+  .recording-confirmation-buttons { justify-content: flex-end; }
 }

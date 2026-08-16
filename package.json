@@ -5,7 +5,8 @@
   "type": "module",
   "description": "A dependency-free local web studio for Piper-compatible ONNX voices.",
   "scripts": {
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20"

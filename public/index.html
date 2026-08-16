@@ -23,6 +23,11 @@
           <button id="openInfo" class="help-button" type="button" aria-label="About ONNXTTS" aria-haspopup="dialog">?</button>
         </div>
         <div class="topbar-actions">
+          <button id="openRecordings" class="help-button recordings-button" type="button" aria-label="Open recordings" aria-haspopup="dialog">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3.5 6.75A1.75 1.75 0 0 1 5.25 5h4l1.8 2h7.7a1.75 1.75 0 0 1 1.75 1.75v8A2.25 2.25 0 0 1 18.25 19H5.75a2.25 2.25 0 0 1-2.25-2.25v-10Z"/>
+            </svg>
+          </button>
           <button id="themeToggle" class="theme-toggle" type="button" aria-label="Switch to dark theme" aria-pressed="false">
             <span class="theme-toggle-label">Light</span>
             <span class="theme-toggle-track" aria-hidden="true"><span class="theme-toggle-thumb"></span></span>
@@ -116,6 +121,40 @@
         </footer>
       </main>
     </div>
+
+    <!-- Persistent generated-audio library and destructive management flow. -->
+    <dialog id="recordingsDialog" class="recordings-dialog" aria-labelledby="recordingsTitle">
+      <section class="dialog-shell recordings-shell">
+        <div class="dialog-heading">
+          <div><p class="label">RECORDING LIBRARY</p><h2 id="recordingsTitle">Previous recordings</h2></div>
+          <button id="closeRecordings" class="dialog-close" type="button" aria-label="Close">×</button>
+        </div>
+        <div class="recordings-controls">
+          <button id="recordingSort" class="recording-control-button" type="button">Sort: Newest</button>
+          <button id="cancelRecordingSelection" class="recording-control-button" type="button" hidden>Cancel selection</button>
+          <button id="clearRecordings" class="recording-control-button danger-control" type="button">Clear</button>
+        </div>
+        <p id="recordingStatus" class="recording-status" role="status">Open the library to load saved recordings.</p>
+        <div id="recordingList" class="recording-list" aria-live="polite"></div>
+        <div class="dialog-actions recording-actions">
+          <span id="recordingSelectionSummary">Select one recording to load.</span>
+          <div class="recording-action-buttons">
+            <button id="deleteRecordings" class="danger-button" type="button" hidden>Delete selected</button>
+            <button id="loadRecording" class="primary-button" type="button" disabled><span class="button-label">Load</span></button>
+          </div>
+        </div>
+        <div id="recordingConfirmation" class="recording-confirmation" aria-hidden="true" aria-live="polite" inert>
+          <div class="recording-confirmation-content">
+            <p id="recordingConfirmationMessage"></p>
+            <div class="recording-confirmation-buttons">
+              <button id="cancelRecordingConfirmation" class="recording-control-button" type="button" tabindex="-1">Cancel</button>
+              <button id="confirmRecordingAction" class="danger-button" type="button" tabindex="-1">Confirm</button>
+            </div>
+          </div>
+        </div>
+        <p class="license-note">Long press a recording to enter multi-select mode.</p>
+      </section>
+    </dialog>
 
     <!-- Hugging Face voice inspection and download flow. -->
     <dialog id="downloadDialog">
