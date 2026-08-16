@@ -42,10 +42,6 @@ sh ./start_onnxtts.sh -open
 sh ./start_onnxtts.sh -open --port 5000
 ```
 
-The Linux launcher uses Node.js from `PATH` and requires version 20 or newer.
-
-Linux 启动器使用 `PATH` 中的 Node.js，并要求版本不低于 20。
-
 After startup, open the address printed in the terminal. The default is <http://127.0.0.1:4317>. Press `Ctrl+C` to stop the server.
 
 启动后请打开终端中显示的地址，默认为 <http://127.0.0.1:4317>。按 `Ctrl+C` 可停止服务。
@@ -156,11 +152,3 @@ Only Piper-compatible ONNX voices are supported. A generic ONNX TTS model may us
 Transcript text is sent only to the local ONNXTTS server. Network access is used for first-run runtime downloads and when you explicitly inspect or download a Hugging Face model.
 
 输入文本只会发送到本机 ONNXTTS 服务。网络访问仅用于首次安装运行时，以及你明确要求检查或下载 Hugging Face 模型时。
-
-The server accepts custom ONNX files up to 1 GB, JSON configurations up to 5 MB, and transcripts up to 50,000 characters. Synthesis uses a bounded first-in, first-out queue with a CPU-sized worker limit. If every worker and waiting slot is occupied, the page reports `Too Many Request, please wait for a while.`; retry after an earlier job finishes.
-
-服务端接受最大 1 GB 的自定义 ONNX、最大 5 MB 的 JSON 配置以及最多 50,000 字符的文本。合成使用容量有限的先进先出队列，并按 CPU 推断 worker 上限。如果所有 worker 和等待位置都已占用，页面会显示 `Too Many Request, please wait for a while.`；请等前面的任务完成后重试。
-
-Developer architecture, API, dependency pins, isolation rules, and maintenance notes are in [DevNotes.md](DevNotes.md).
-
-开发架构、API、依赖固定版本、隔离规则和维护说明请参阅 [DevNotes.md](DevNotes.md)。

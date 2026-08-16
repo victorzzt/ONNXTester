@@ -232,3 +232,12 @@ The bundled installers currently target Windows x64 and Linux x86_64. Only Piper
 Piper is GPL-3.0-or-later. The selected Windows and Linux FFmpeg builds are GPLv3 builds. Model licenses vary by model card. Any redistribution must preserve the applicable notices and satisfy the licenses for bundled binaries and models.
 
 Piper 使用 GPL-3.0-or-later。当前选择的 Windows 与 Linux FFmpeg 均为 GPLv3 构建。模型许可取决于各自模型卡；任何再分发都必须保留适用声明，并满足所捆绑二进制与模型的许可要求。
+
+The server accepts custom ONNX files up to 1 GB, JSON configurations up to 5 MB, and transcripts up to 50,000 characters. Synthesis uses a bounded first-in, first-out queue with a CPU-sized worker limit. If every worker and waiting slot is occupied, the page reports `Too Many Request, please wait for a while.`; retry after an earlier job finishes.
+
+服务端接受最大 1 GB 的自定义 ONNX、最大 5 MB 的 JSON 配置以及最多 50,000 字符的文本。合成使用容量有限的先进先出队列，并按 CPU 推断 worker 上限。如果所有 worker 和等待位置都已占用，页面会显示 `Too Many Request, please wait for a while.`；请等前面的任务完成后重试。
+
+Developer architecture, API, dependency pins, isolation rules, and maintenance notes are in [DevNotes.md](DevNotes.md).
+
+开发架构、API、依赖固定版本、隔离规则和维护说明请参阅 [DevNotes.md](DevNotes.md)。
+
